@@ -1,0 +1,13 @@
+[package]
+name = "ross-kernel"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ross-common = { path = "../ross-common" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

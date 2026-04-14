@@ -1,0 +1,36 @@
+ENTRY(_start)
+
+SECTIONS
+{
+    /* Start at 2MB */
+    . = 2M; 
+
+    /* Code section */
+    .text :
+    {
+        /* Force the entry point to be at the very first byte of the file */
+        KEEP(*(.text._start))
+        *(.text .text.*)
+    }
+
+    /* Read-only data (like string literals) */
+    .rodata :
+    {
+        *(.rodata .rodata.*)
+    }
+
+    /* Initialized data */
+    .data :
+    {
+        *(.data .data.*)
+    }
+
+    /* Uninitialized data (zero-filled) */
+    .bss :
+    {
+        *(.bss .bss.*)
+    }
+
+    /* Define the end of the kernel for memory management later */
+    _kernel_end = .;
+}

@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "rb-loader",
+    "ross-kernel",
+    "ross-common",
+]
+# Optionally define a resolver (highly recommended: "2" or "3")
+resolver = "2"

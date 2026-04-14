@@ -1,0 +1,7 @@
+[build]
+target = "x86_64-unknown-uefi"
+
+[unstable]
+# This helps resolve the "unwinding panics" error by rebuilding core
+build-std = ["core", "alloc"]
+build-std-features = ["compiler-builtins-mem"]

@@ -1,0 +1,15 @@
+[package]
+name = "rb-loader"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log = "0.4.29"
+uefi = { version = "0.37.0", features = ["alloc", "panic_handler", "logger"] }
+ross-common = { path = "../ross-common" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort" 
