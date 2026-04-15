@@ -7,6 +7,7 @@ const MAX_PAGES:    usize = BITMAP_BYTES * 8;   // 262 144 pages → 1 GB
 // Initialized to 0xFF (all allocated); init() marks usable pages free.
 static mut BITMAP:     [u8; BITMAP_BYTES] = [0xFF; BITMAP_BYTES];
 static mut FREE_COUNT: usize = 0;
+static mut TOTAL_COUNT: usize = 0;
 
 pub fn init(map: *const MemoryRegion, count: usize) {
     if map.is_null() || count == 0 {
@@ -24,6 +25,7 @@ pub fn init(map: *const MemoryRegion, count: usize) {
                     if BITMAP[byte] & (1 << bit) != 0 {
                         BITMAP[byte] &= !(1 << bit);
                         FREE_COUNT += 1;
+                        TOTAL_COUNT += 1;
                     }
                 }
             }
@@ -70,3 +72,7 @@ pub fn free_pages()  -> usize { unsafe { FREE_COUNT } }
 
 /// Free memory in mebibytes.
 pub fn free_mib() -> usize { free_pages() * PAGE_SIZE / (1024 * 1024) }
+
+/// Total usable memory in mebibytes.
+pub fn total_mib() -> usize { (unsafe { TOTAL_COUNT }) * PAGE_SIZE / (1024 * 1024) }
+

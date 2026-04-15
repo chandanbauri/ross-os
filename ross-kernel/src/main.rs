@@ -14,7 +14,9 @@ mod pic;
 mod pit;
 mod pmm;
 mod paging;
+mod shell;
 mod writer;
+mod serial;
 
 use alloc::vec::Vec;
 use core::panic::PanicInfo;
@@ -25,14 +27,45 @@ static mut IDT:  idt::Idt = idt::Idt::new();
 
 #[repr(align(16))]
 struct KernelStack([u8; 0x4000]); // 16 KB
-static KERNEL_STACK: KernelStack = KernelStack([0; 0x4000]);
 
 #[unsafe(no_mangle)]
-pub extern "sysv64" fn _start(info: &'static BootInfo) -> ! {
+#[unsafe(link_section = ".data")]
+static mut KERNEL_STACK: KernelStack = KernelStack([0; 0x4000]);
+
+
+unsafe extern "C" {
+    static mut _bss_start: u8;
+    static mut _bss_end: u8;
+}
+
+
+static mut SHELL_STATE: shell::State = shell::State::Splash;
+
+core::arch::global_asm!(
+    ".section .text._start",
+    ".global _start",
+    "_start:",
+    "cli",
+    "lea rsp, [KERNEL_STACK + 0x4000]",
+    "mov rdi, rcx",
+    "jmp kernel_main"
+);
+
+
+
+#[unsafe(no_mangle)]
+extern "C" fn kernel_main(info: &'static BootInfo) -> ! {
     // ── 1. CPU Fundamentals ─────────────────────────────────────────────────
     unsafe {
         GDT.load();
-        core::arch::asm!("mov rsp, {0}", in(reg) KERNEL_STACK.0.as_ptr().add(0x4000));
+
+        // Zero BSS section while on our own writable stack
+        let mut curr = core::ptr::addr_of_mut!(_bss_start);
+        let end  = core::ptr::addr_of!(_bss_end);
+        while (curr as usize) < (end as usize) {
+            core::ptr::write_volatile(curr, 0);
+            curr = curr.add(1);
+        }
 
         writer::init(info);
 
@@ -40,6 +73,7 @@ pub extern "sysv64" fn _start(info: &'static BootInfo) -> ! {
         idt::init_idt(&mut *idt_ptr);
         (*idt_ptr).load();
     }
+
 
     // ── 2. Physical Memory Manager ──────────────────────────────────────────
     pmm::init(info.memory_map, info.memory_map_len);
@@ -119,16 +153,36 @@ pub extern "sysv64" fn _start(info: &'static BootInfo) -> ! {
     }
 
     // ── 9. Main Event Loop ───────────────────────────────────────────────────
-    let mut ready_shown = false;
+    let mut last_ticks = 0;
     loop {
+        // 1. Uptime Clock (Top Right Corner)
+        let current_ticks = pit::ticks();
+        if current_ticks != last_ticks {
+            let seconds = current_ticks / 100;
+            let old_x = wr.x;
+            let old_y = wr.y;
+
+            wr.fill_rect(w - 180, 20, 180, 20, writer::BG);
+            wr.set_pos(w - 180, 20);
+            
+            use core::fmt::Write;
+            let _ = write!(wr, "UPTIME: {}s", seconds);
+            
+            wr.set_pos(old_x, old_y);
+            last_ticks = current_ticks;
+        }
+
+        // 2. Shell Interaction
         while let Some(sc) = kbuf::pop() {
-            if let Some(b'\n') = kbuf::scancode_to_ascii(sc) {
-                if !ready_shown {
-                    keyboard::show_ready();
-                    ready_shown = true;
+            if let Some(ascii) = kbuf::scancode_to_ascii(sc) {
+                unsafe {
+                    let state_ptr = core::ptr::addr_of_mut!(SHELL_STATE);
+                    shell::handle_byte(&mut *state_ptr, ascii);
                 }
             }
         }
+
+
         core::hint::spin_loop();
     }
 }
@@ -150,6 +204,17 @@ fn alloc_error(layout: core::alloc::Layout) -> ! {
 }
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
+    use core::fmt::Write;
+    let _ = write!(crate::serial::SerialPort, "KERNEL PANIC: {}\n", info);
+
+    let wr = writer::try_get_writer();
+    if let Some(wr) = wr {
+        wr.fill_rect(0, 0, 3000, 3000, writer::RED); // Red Screen
+        wr.set_pos(50, 50);
+        let _ = writeln!(wr, "KERNEL PANIC");
+        let _ = writeln!(wr, "{}", info);
+    }
     loop {}
 }
+

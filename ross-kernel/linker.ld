@@ -28,9 +28,12 @@ SECTIONS
     /* Uninitialized data (zero-filled) */
     .bss :
     {
+        _bss_start = .;
         *(.bss .bss.*)
+        _bss_end = .;
     }
 
     /* Define the end of the kernel for memory management later */
     _kernel_end = .;
 }
+

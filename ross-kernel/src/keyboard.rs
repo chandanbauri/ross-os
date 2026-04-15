@@ -1,21 +1,30 @@
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use crate::idt::InterruptStackFrame;
 use crate::kbuf;
 use crate::pic;
 use crate::writer;
 
-/// IRQ1 handler: read the scancode, push it to the ring buffer, send EOI.
+static READY_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// IRQ1 handler: read scancode, buffer it, and handle Enter immediately.
 pub extern "x86-interrupt" fn handler(_frame: InterruptStackFrame) {
     let scancode = unsafe { pic::inb(0x60) };
-    kbuf::push(scancode);
+    kbuf::push(scancode); // buffer for future consumers
+
+    // 0x1C = Enter make-code; handle directly to avoid missing it in the event loop
+    if scancode == 0x1C && !READY_SHOWN.load(Ordering::Relaxed) {
+        READY_SHOWN.store(true, Ordering::Relaxed);
+        show_ready();
+    }
+
     unsafe { pic::send_eoi(1); }
 }
 
-/// Render the "R.O.S.S. Ready." overlay over the "Starting..." area.
-/// Called from the main kernel loop when Enter is detected in the kbuf.
+/// Replace the "Starting..." overlay with "R.O.S.S. Ready."
 pub fn show_ready() {
     let writer = writer::get_writer();
 
-    // Clear the "Starting..." + progress-bar area
     let clear_y = writer.h / 2 + 20;
     writer.fill_rect(0, clear_y, writer.w, 100, writer::BG);
 

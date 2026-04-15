@@ -105,7 +105,7 @@ fn main() -> Status {
             memory_map_len:   MEM_REGION_COUNT,
         };
 
-        let kernel_entry: extern "sysv64" fn(&ross_common::BootInfo) -> ! =
+        let kernel_entry: extern "C" fn(&ross_common::BootInfo) -> ! =
             core::mem::transmute(kernel_ptr);
 
         kernel_entry(&info);

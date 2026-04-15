@@ -1,0 +1,41 @@
+{
+    // ── rust-analyzer: per-package target overrides ───────────────────────────
+    //
+    // This workspace has three crates that compile to three different targets:
+    //   ross-kernel  → x86_64-unknown-none   (bare-metal kernel)
+    //   rb-loader    → x86_64-unknown-uefi   (UEFI bootloader)
+    //   ross-common  → (library, analysed with kernel target)
+    //
+    // Without this config, rust-analyzer uses your host target (e.g.
+    // aarch64-apple-darwin) and reports false errors like:
+    //   • "x86-interrupt" is not a supported ABI
+    //   • "sysv64" is not a supported ABI
+    //
+    "rust-analyzer.cargo.allTargets": false,
+    "rust-analyzer.cargo.extraEnv": {
+        "CARGO_ENCODED_RUSTFLAGS": ""
+    },
+
+    // Per-workspace target: each package group gets the right target.
+    // rust-analyzer will use these when type-checking each crate.
+    "rust-analyzer.linkedProjects": [],
+
+    // The simplest single-target override — sets the default for all crates.
+    // Since ross-kernel is the primary development crate, use its target.
+    // The UEFI loader is less frequently edited so this trade-off is acceptable.
+    "rust-analyzer.cargo.target": "x86_64-unknown-none",
+
+    // Ensure the nightly features used in the kernel are active during analysis.
+    "rust-analyzer.cargo.features": "all",
+
+    // Pass the same unstable flags cargo uses (build-std etc.)
+    "rust-analyzer.cargo.extraArgs": [
+        "--target", "x86_64-unknown-none"
+    ],
+
+    // Proc-macro server should match the nightly toolchain.
+    "rust-analyzer.procMacro.enable": false,
+
+    // Rust edition for the workspace
+    "rust-analyzer.rustfmt.extraArgs": []
+}

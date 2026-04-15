@@ -1,0 +1,209 @@
+/// ROSS Shell — Phase 4
+///
+/// Implements:
+///   • Two-state machine: Splash → Active
+///   • Line editing: printable chars, Backspace, Enter
+///   • Command dispatch: help, clear, memory, uptime, version
+///   • Coloured output via writer colour constants
+
+use crate::{pit, pmm, writer};
+
+const MAX_LINE: usize = 128;
+const SCALE:    usize = 2;
+
+/// Y-coordinate where the terminal area begins.
+pub const TERM_Y: usize = 460;
+
+static mut LINE_BUF: [u8; MAX_LINE] = [0u8; MAX_LINE];
+static mut LINE_LEN: usize = 0;
+
+// ── State machine ─────────────────────────────────────────────────────────────
+
+pub enum State {
+    /// Waiting for the first Enter to leave the splash screen.
+    Splash,
+    /// Shell is active; process commands.
+    Active,
+}
+
+/// Process one decoded byte from the keyboard ring buffer.
+pub fn handle_byte(state: &mut State, ch: u8) {
+    let wr = writer::get_writer();
+    match state {
+        State::Splash => {
+            if ch == b'\n' {
+                *state = State::Active;
+                activate(wr);
+            }
+        }
+        State::Active => match ch {
+            b'\n' => {
+                // Execute current line
+                wr.put_char(b'\n', writer::FG, SCALE);
+                let len = unsafe { LINE_LEN };
+                let raw = unsafe { &LINE_BUF[..len] };
+                let cmd = core::str::from_utf8(raw).unwrap_or("").trim();
+                execute(cmd, wr);
+                // Reset line buffer
+                unsafe { LINE_LEN = 0; }
+                prompt(wr);
+            }
+            0x08 => {
+                // Backspace
+                if unsafe { LINE_LEN > 0 } {
+                    unsafe { LINE_LEN -= 1; }
+                    wr.backspace(SCALE);
+                }
+            }
+            b' '..=b'~' => {
+                // Printable ASCII
+                let len = unsafe { LINE_LEN };
+                if len < MAX_LINE {
+                    unsafe {
+                        LINE_BUF[len] = ch;
+                        LINE_LEN += 1;
+                    }
+                    wr.put_char(ch, writer::FG, SCALE);
+                }
+            }
+            _ => {}
+        },
+    }
+}
+
+// ── Splash → Shell transition ─────────────────────────────────────────────────
+
+fn activate(wr: &mut writer::Writer) {
+    let w = wr.w;
+    let h = wr.h;
+
+    // Replace "Starting..." with "R.O.S.S. Ready."
+    let ready_y = h / 2 + 20;
+    wr.fill_rect(0, ready_y, w, 100, writer::BG);
+    let msg   = "R.O.S.S. Ready.";
+    let scale = 3;
+    let msg_w = (msg.len() * (8 * scale + scale)).saturating_sub(scale);
+    wr.set_pos(w / 2 - msg_w / 2, ready_y + 10);
+    wr.put_str(msg, writer::ACCENT, scale);
+
+    // Draw terminal separator
+    wr.fill_rect(0, TERM_Y - 2, w, 2, 0x00_33_33_33);
+
+    // Clear terminal area
+    wr.fill_rect(0, TERM_Y, w, h - TERM_Y, writer::BG);
+
+    // Welcome banner
+    wr.set_pos(writer::LEFT_MARGIN, TERM_Y + 6);
+    wr.put_str("ROSS Shell v0.4  |  Type 'help' for commands", writer::DIM, 1);
+    wr.set_pos(writer::LEFT_MARGIN, TERM_Y + 22);
+
+    prompt(wr);
+}
+
+fn prompt(wr: &mut writer::Writer) {
+    wr.put_str("ross", writer::ACCENT, SCALE);
+    wr.put_str("> ", writer::DIM, SCALE);
+    wr.mark_input_start();
+}
+
+// ── Command dispatch ──────────────────────────────────────────────────────────
+
+fn execute(input: &str, wr: &mut writer::Writer) {
+    let mut parts = input.split_whitespace();
+    match parts.next().unwrap_or("") {
+        "help"    => cmd_help(wr),
+        "clear"   => cmd_clear(wr),
+        "memory"  => cmd_memory(wr),
+        "uptime"  => cmd_uptime(wr),
+        "version" => cmd_version(wr),
+        ""        => {}
+        other     => {
+            wr.put_str("  Error: unknown command '", writer::RED, SCALE);
+            wr.put_str(other, writer::RED, SCALE);
+            wr.put_str("'\n", writer::RED, SCALE);
+        }
+    }
+}
+
+// ── Commands ──────────────────────────────────────────────────────────────────
+
+fn cmd_help(wr: &mut writer::Writer) {
+    let cmds: &[(&str, &str)] = &[
+        ("help",    "Show this help message"),
+        ("clear",   "Clear the terminal area"),
+        ("memory",  "Show physical memory statistics"),
+        ("uptime",  "Show system uptime"),
+        ("version", "Show ROSS version info"),
+    ];
+    wr.put_str("  Available commands:\n", writer::ACCENT, SCALE);
+    for (name, desc) in cmds {
+        wr.put_str("    ", writer::FG, SCALE);
+        wr.put_str(name, writer::FG, SCALE);
+        // pad to 10 chars
+        for _ in name.len()..10 { wr.put_char(b' ', writer::FG, SCALE); }
+        wr.put_str("- ", writer::DIM, SCALE);
+        wr.put_str(desc, writer::DIM, SCALE);
+        wr.put_char(b'\n', writer::FG, SCALE);
+    }
+}
+
+fn cmd_clear(wr: &mut writer::Writer) {
+    let w = wr.w;
+    let h = wr.h;
+    wr.fill_rect(0, TERM_Y, w, h - TERM_Y, writer::BG);
+    wr.set_pos(writer::LEFT_MARGIN, TERM_Y + 6);
+    wr.put_str("ROSS Shell v0.4  |  Type 'help' for commands", writer::DIM, 1);
+    wr.set_pos(writer::LEFT_MARGIN, TERM_Y + 22);
+}
+
+fn cmd_memory(wr: &mut writer::Writer) {
+    let free_mib  = pmm::free_mib();
+    let total_mib = pmm::total_mib();
+    let used_mib  = total_mib.saturating_sub(free_mib);
+
+    wr.put_str("  Physical Memory\n", writer::ACCENT, SCALE);
+
+    wr.put_str("    Total  : ", writer::FG,  SCALE);
+    print_num(wr, total_mib);
+    wr.put_str(" MiB\n", writer::FG, SCALE);
+
+    wr.put_str("    Used   : ", writer::FG,  SCALE);
+    print_num(wr, used_mib);
+    wr.put_str(" MiB\n", writer::FG, SCALE);
+
+    wr.put_str("    Free   : ", writer::ACCENT, SCALE);
+    print_num(wr, free_mib);
+    wr.put_str(" MiB\n", writer::ACCENT, SCALE);
+}
+
+fn cmd_uptime(wr: &mut writer::Writer) {
+    let ticks   = pit::ticks();
+    let seconds = ticks / 100;
+    let minutes = seconds / 60;
+    let secs    = seconds % 60;
+
+    wr.put_str("  Uptime: ", writer::FG, SCALE);
+    print_num(wr, minutes as usize);
+    wr.put_str("m ", writer::FG, SCALE);
+    print_num(wr, secs as usize);
+    wr.put_str("s  (", writer::DIM, SCALE);
+    print_num(wr, ticks as usize);
+    wr.put_str(" ticks @ 100 Hz)\n", writer::DIM, SCALE);
+
+}
+
+fn cmd_version(wr: &mut writer::Writer) {
+    wr.put_str("  R.O.S.S.  Rapid Operating System Shell\n", writer::ACCENT, SCALE);
+    wr.put_str("  Phase 4  |  x86_64  |  Bare Metal\n", writer::DIM, SCALE);
+}
+
+// ── Utility ───────────────────────────────────────────────────────────────────
+
+/// Print a usize in decimal without using alloc.
+fn print_num(wr: &mut writer::Writer, mut n: usize) {
+    if n == 0 { wr.put_char(b'0', writer::FG, SCALE); return; }
+    let mut buf = [0u8; 20];
+    let mut i = 0;
+    while n > 0 { buf[i] = b'0' + (n % 10) as u8; n /= 10; i += 1; }
+    while i > 0 { i -= 1; wr.put_char(buf[i], writer::FG, SCALE); }
+}

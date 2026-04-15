@@ -19,3 +19,4 @@ qemu-system-x86_64 \
     -drive format=raw,file=fat:rw:build \
     -m 512M -vga std -net none -serial stdio -no-reboot \
     -display cocoa,zoom-to-fit=off
+
