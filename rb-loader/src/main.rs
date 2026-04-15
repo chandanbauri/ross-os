@@ -82,6 +82,7 @@ fn main() -> Status {
     uefi::println!("Resolution: {}x{}", width, height);
 
     let ptr = gop.frame_buffer().as_mut_ptr();
+    uefi::println!("Framebuffer: {:?}", ptr);
 
     unsafe {
         let fb_u32 = ptr as *mut u32;
@@ -105,8 +106,10 @@ fn main() -> Status {
             memory_map_len:   MEM_REGION_COUNT,
         };
 
+        handoff::map_higher_half();
+
         let kernel_entry: extern "C" fn(&ross_common::BootInfo) -> ! =
-            core::mem::transmute(kernel_ptr);
+            core::mem::transmute(0xFFFFFFFF_80200000u64);
 
         kernel_entry(&info);
     }

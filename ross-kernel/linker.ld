@@ -3,7 +3,7 @@ ENTRY(_start)
 SECTIONS
 {
     /* Start at 2MB */
-    . = 2M; 
+    . = 0xFFFFFFFF80200000; 
 
     /* Code section */
     .text :

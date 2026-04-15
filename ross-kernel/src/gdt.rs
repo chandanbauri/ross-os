@@ -6,6 +6,43 @@ pub struct GdtDescriptor {
     pub base: u64,
 }
 
+#[repr(C, packed)]
+pub struct Tss {
+    reserved0: u32,
+    pub rsp0: u64,
+    pub rsp1: u64,
+    pub rsp2: u64,
+    reserved1: u64,
+    pub ist1: u64,
+    pub ist2: u64,
+    pub ist3: u64,
+    pub ist4: u64,
+    pub ist5: u64,
+    pub ist6: u64,
+    pub ist7: u64,
+    reserved2: u64,
+    reserved3: u16,
+    pub iopb_offset: u16,
+}
+
+impl Tss {
+    pub const fn new() -> Self {
+        Self {
+            reserved0: 0,
+            rsp0: 0,
+            rsp1: 0,
+            rsp2: 0,
+            reserved1: 0,
+            ist1: 0, ist2: 0, ist3: 0, ist4: 0, ist5: 0, ist6: 0, ist7: 0,
+            reserved2: 0,
+            reserved3: 0,
+            iopb_offset: size_of::<Self>() as u16,
+        }
+    }
+}
+
+pub static mut TSS: Tss = Tss::new();
+
 #[repr(C, align(8))]
 pub struct Gdt {
     pub entries: [u64; 6],
@@ -15,17 +52,16 @@ pub struct Gdt {
 #[allow(dead_code)] pub const KERNEL_DATA_SELECTOR: u16 = 2 << 3;
 #[allow(dead_code)] pub const USER_DATA_SELECTOR:   u16 = 3 << 3;
 #[allow(dead_code)] pub const USER_CODE_SELECTOR:   u16 = 4 << 3;
-#[allow(dead_code)] pub const COMPAT_CODE_SELECTOR: u16 = 5 << 3;
 
 impl Gdt {
     pub const fn new() -> Self {
         let mut entries = [0u64; 6];
         entries[0] = 0;
-        entries[1] = create_gdt_entry(0, 0, 0x9A, 0x2); // Kernel Code 64-bit
+        entries[1] = create_gdt_entry(0, 0, 0x9A, 0x2); // Kernel Code
         entries[2] = create_gdt_entry(0, 0, 0x92, 0x0); // Kernel Data
         entries[3] = create_gdt_entry(0, 0, 0xF2, 0x0); // User Data
-        entries[4] = create_gdt_entry(0, 0, 0xFA, 0x2); // User Code 64-bit
-        entries[5] = create_gdt_entry(0, 0xFFFFF, 0x9A, 0x4); // Compat Code 32-bit
+        entries[4] = create_gdt_entry(0, 0, 0xFA, 0x2); // User Code
+        entries[5] = create_gdt_entry(0, 0xFFFFF, 0x9A, 0x4); 
         Self { entries }
     }
 
@@ -37,26 +73,16 @@ impl Gdt {
 
         unsafe {
             core::arch::asm!(
-                // Load the new GDT
                 "lgdt [{desc}]",
-                // Reload data segment registers using explicit 16-bit ax register.
-                // Using mov ds, r64 is not portable; use ax (16-bit) explicitly.
                 "mov ax, 0x10",
-                "mov ds, ax",
-                "mov es, ax",
-                "mov fs, ax",
-                "mov gs, ax",
-                "mov ss, ax",
-                // Reload CS via a far return.
-                // Stack after two pushes: [rsp] = RIP, [rsp+8] = CS
+                "mov ds, ax", "mov es, ax", "mov fs, ax", "mov gs, ax", "mov ss, ax",
                 "push 0x08",
                 "lea rax, [2f + rip]",
                 "push rax",
                 "retfq",
                 "2:",
                 desc = in(reg) &descriptor,
-                out("rax") _,   // rax is clobbered by lea+push
-                // ax is low 16 of rax, already declared above
+                out("rax") _,
             );
         }
     }

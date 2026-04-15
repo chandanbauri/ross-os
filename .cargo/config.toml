@@ -1,8 +1,8 @@
 [target.x86_64-unknown-none]
 rustflags = [
     "-C", "link-arg=-Tross-kernel/linker.ld",
-    "-C", "relocation-model=static", # Change back to static for identity mapping
-    "-C", "code-model=small",       # Ensures we stay in the bottom 2GB of RAM
+    "-C", "relocation-model=static", 
+    "-C", "code-model=kernel",
 ]
 
 [unstable]

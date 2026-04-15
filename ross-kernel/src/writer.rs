@@ -46,7 +46,10 @@ impl Writer {
     pub fn fill_rect(&self, x: usize, y: usize, w: usize, h: usize, color: u32) {
         for row in y..(y + h).min(self.h) {
             for col in x..(x + w).min(self.w) {
-                unsafe { *self.framebuffer.add(row * self.w + col) = color; }
+                unsafe {
+                    let ptr = self.framebuffer.add(row * self.w + col);
+                    *ptr = color;
+                }
             }
         }
     }

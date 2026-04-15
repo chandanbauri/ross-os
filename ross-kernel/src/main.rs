@@ -15,6 +15,10 @@ mod pit;
 mod pmm;
 mod paging;
 mod shell;
+mod task;
+mod syscall;
+mod vfs;
+mod ramfs;
 mod writer;
 mod serial;
 
@@ -22,7 +26,7 @@ use alloc::vec::Vec;
 use core::panic::PanicInfo;
 use ross_common::BootInfo;
 
-static     GDT:  gdt::Gdt = gdt::Gdt::new();
+static mut  GDT:  gdt::Gdt = gdt::Gdt::new();
 static mut IDT:  idt::Idt = idt::Idt::new();
 
 #[repr(align(16))]
@@ -55,9 +59,13 @@ core::arch::global_asm!(
 
 #[unsafe(no_mangle)]
 extern "C" fn kernel_main(info: &'static BootInfo) -> ! {
+    serial::serial_print("Entered kernel_main\n");
     // ── 1. CPU Fundamentals ─────────────────────────────────────────────────
     unsafe {
-        GDT.load();
+        let gdt_ptr = core::ptr::addr_of_mut!(GDT);
+        (*gdt_ptr).load();
+
+        serial::serial_print("GDT loaded\n");
 
         // Zero BSS section while on our own writable stack
         let mut curr = core::ptr::addr_of_mut!(_bss_start);
@@ -66,30 +74,71 @@ extern "C" fn kernel_main(info: &'static BootInfo) -> ! {
             core::ptr::write_volatile(curr, 0);
             curr = curr.add(1);
         }
+        serial::serial_print("BSS Cleared\n");
 
         writer::init(info);
 
         let idt_ptr = core::ptr::addr_of_mut!(IDT);
         idt::init_idt(&mut *idt_ptr);
         (*idt_ptr).load();
+        serial::serial_print("IDT loaded\n");
     }
 
 
     // ── 2. Physical Memory Manager ──────────────────────────────────────────
     pmm::init(info.memory_map, info.memory_map_len);
+    serial::serial_print("PMM initialized\n");
 
     // ── 3. Virtual Memory (Paging) ──────────────────────────────────────────
     unsafe { paging::init(); }
+    serial::serial_print("Paging: Native tables active\n");
 
     // ── 4. Kernel Heap ──────────────────────────────────────────────────────
     heap::init();
 
-    // ── 5. PIC + PIT + Keyboard ─────────────────────────────────────────────
+    // ── 5. Shell state reset ────────────────────────────────────────────────
     unsafe {
-        pit::init();  // Programme PIT to 100 Hz before unmasking IRQ0
+        let state_ptr = core::ptr::addr_of_mut!(SHELL_STATE);
+        *state_ptr = shell::State::Splash;
+    }
+
+    // ── 6. Tasking & Scheduler ──────────────────────────────────────────────
+    {
+        let mut sched = task::SCHEDULER.lock();
+        sched.set_main(task::Task::main_task());
+        sched.add_task(task::Task::new(task_a as *const () as usize, 0x4000));
+        sched.add_task(task::Task::new(task_b as *const () as usize, 0x4000));
+    }
+
+    // ── 7. System Calls ─────────────────────────────────────────────────────
+    unsafe { syscall::init(); }
+
+    // ── 8. Virtual File System ──────────────────────────────────────────────
+    {
+        static RAMDISK: &[u8] = include_bytes!("../../assets/ramdisk.tar");
+        let ramfs = alloc::sync::Arc::new(ramfs::TarFileSystem::new(RAMDISK));
+        vfs::init(ramfs);
+        serial::serial_print("VFS initialized with TarFS\n");
+
+        // Test reading a file
+        if let Ok(file) = vfs::open("hello.txt") {
+            let mut buf = [0u8; 64];
+            if let Ok(n) = file.read(0, &mut buf) {
+                serial::serial_print("VFS Test: read 'hello.txt' -> ");
+                serial::serial_print(core::str::from_utf8(&buf[..n]).unwrap_or("error"));
+                serial::serial_print("\n");
+            }
+        } else {
+            serial::serial_print("VFS Test: failed to open 'hello.txt'\n");
+        }
+    }
+
+    // ── 9. PIC + PIT + Keyboard ─────────────────────────────────────────────
+    unsafe {
+        pit::init();  // Program PIT to 100 Hz
         pic::init();  // Remap PIC; unmask IRQ0 (timer) and IRQ1 (keyboard)
 
-        // Drain any PS/2 scancodes buffered during UEFI boot
+        // Drain any PS/2 scancodes
         while pic::inb(0x64) & 0x01 != 0 {
             pic::inb(0x60);
         }
@@ -126,18 +175,15 @@ extern "C" fn kernel_main(info: &'static BootInfo) -> ! {
     // ── 7. Kernel Log ────────────────────────────────────────────────────────
     wr.set_pos(50, h.saturating_sub(90));
     kprintln!("Memory: {} MiB free  ({} regions)", pmm::free_mib(), info.memory_map_len);
-    kprintln!("Paging: CR3 switched to kernel-managed tables");
+    kprintln!("Paging: CR3 switched to -2GB native tables");
     kprintln!("Press ENTER to continue...");
 
-    // ── 8. Heap smoke-test (Phase 3 milestone) ───────────────────────────────
+    // ── 8. Heap smoke-test ──────────────────────────────────────────────────
     {
         let mut v: Vec<u32> = Vec::new();
         for i in 0u32..8 {
-            v.push(i * i);  // 0, 1, 4, 9, 16, 25, 36, 49
+            v.push(i * i);
         }
-        // If we reach here without a crash the heap is working.
-        // (kprintln from an alloc context verifies fmt machinery too)
-        let _ = v; // drop → heap free
     }
 
     // ── 9. Main Event Loop ───────────────────────────────────────────────────
@@ -206,3 +252,17 @@ fn panic(info: &PanicInfo) -> ! {
     loop {}
 }
 
+extern "C" fn task_a() -> ! {
+    let msg = "Hello from Syscall!";
+    loop {
+        syscall::do_syscall(1, msg.as_ptr() as u64, msg.len() as u64, 0);
+        for _ in 0..1_000_000 { unsafe { core::arch::asm!("nop"); } }
+    }
+}
+
+extern "C" fn task_b() -> ! {
+    loop {
+        crate::serial::serial_print("B");
+        for _ in 0..1_000_000 { unsafe { core::arch::asm!("nop"); } }
+    }
+}

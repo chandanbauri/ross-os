@@ -91,16 +91,46 @@ pub fn init_idt(idt: &mut Idt) {
         idt.entries[i].set_handler(irq_stub_handler as *const u8);
     }
     // IRQ0 (PIT timer) → vector 32
-    idt.entries[32].set_handler(timer_handler as *const u8);
+    idt.entries[32].set_handler(timer_handler_stub as *const u8);
     // IRQ1 (PS/2 keyboard) → vector 33
     idt.entries[33].set_handler(keyboard::handler as *const u8);
 }
 
+core::arch::global_asm!(
+    ".global timer_handler_stub",
+    "timer_handler_stub:",
+    "push rax", "push rcx", "push rdx", "push rdi", "push rsi",
+    "push r8",  "push r9",  "push r10", "push r11",
+    "push rbx", "push rbp", "push r12", "push r13", "push r14", "push r15",
+    "mov rdi, rsp",
+    "call task_timer_handler",
+    "mov rsp, rax",
+    "pop r15", "pop r14", "pop r13", "pop r12", "pop rbp", "pop rbx",
+    "pop r11", "pop r10", "pop r9",  "pop r8",
+    "pop rsi", "pop rdi", "pop rdx", "pop rcx", "pop rax",
+    "iretq"
+);
+
+unsafe extern "C" {
+    fn timer_handler_stub();
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn task_timer_handler(rsp: u64) -> u64 {
+    pit::tick();
+    let next_rsp = crate::task::SCHEDULER.lock().pick_next(rsp);
+    unsafe { pic::send_eoi(0); }
+    next_rsp
+}
+
 /// PIT timer handler (IRQ0 → vector 32).
+// Replaced by timer_handler_stub
+/*
 extern "x86-interrupt" fn timer_handler(_frame: InterruptStackFrame) {
     pit::tick();
     unsafe { pic::send_eoi(0); }
 }
+*/
 
 /// Generic stub for all unused hardware IRQs — just sends EOI and returns.
 extern "x86-interrupt" fn irq_stub_handler(_frame: InterruptStackFrame) {
@@ -135,6 +165,9 @@ extern "x86-interrupt" fn page_fault_handler(stack_frame: InterruptStackFrame, _
 }
 
 fn panic_screen(name: &str, _stack_frame: &InterruptStackFrame) {
+    crate::serial::serial_print("panic_screen TRIGGERED: ");
+    crate::serial::serial_print(name);
+    crate::serial::serial_print("\n");
     let writer = writer::get_writer();
     writer.fill_rect(0, 0, 10000, 10000, 0x000000FF); // Red Screen
     writer.set_pos(100, 100);
