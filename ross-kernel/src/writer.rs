@@ -96,7 +96,7 @@ impl Writer {
         self.y += 8 * scale + 4;
         if self.y + 8 * scale >= self.h {
             // Simple wrap: reset to a safe zone (no scroll yet)
-            self.y = self.h / 2 + 60;
+            self.y = crate::shell::TERM_Y + 20;
             self.fill_rect(0, self.y, self.w, self.h - self.y, BG);
         }
     }
@@ -107,10 +107,9 @@ impl Writer {
     }
 }
 
-/// fmt::Write → kprint!/kprintln! macros (scale 2, FG colour).
 impl fmt::Write for Writer {
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.put_str(s, FG, 2);
+        self.put_str(s, FG, 1);
         Ok(())
     }
 }

@@ -9,10 +9,10 @@
 use crate::{pit, pmm, writer};
 
 const MAX_LINE: usize = 128;
-const SCALE:    usize = 2;
+const SCALE:    usize = 1;
 
 /// Y-coordinate where the terminal area begins.
-pub const TERM_Y: usize = 460;
+pub const TERM_Y: usize = 60;
 
 static mut LINE_BUF: [u8; MAX_LINE] = [0u8; MAX_LINE];
 static mut LINE_LEN: usize = 0;
@@ -78,13 +78,11 @@ fn activate(wr: &mut writer::Writer) {
     let h = wr.h;
 
     // Replace "Starting..." with "R.O.S.S. Ready."
-    let ready_y = h / 2 + 20;
-    wr.fill_rect(0, ready_y, w, 100, writer::BG);
+    let ready_y = 44;
+    wr.fill_rect(20, ready_y, 200, 10, writer::BG);
     let msg   = "R.O.S.S. Ready.";
-    let scale = 3;
-    let msg_w = (msg.len() * (8 * scale + scale)).saturating_sub(scale);
-    wr.set_pos(w / 2 - msg_w / 2, ready_y + 10);
-    wr.put_str(msg, writer::ACCENT, scale);
+    wr.set_pos(20, ready_y);
+    wr.put_str(msg, writer::ACCENT, SCALE);
 
     // Draw terminal separator
     wr.fill_rect(0, TERM_Y - 2, w, 2, 0x00_33_33_33);
@@ -95,7 +93,7 @@ fn activate(wr: &mut writer::Writer) {
     // Welcome banner
     wr.set_pos(writer::LEFT_MARGIN, TERM_Y + 6);
     wr.put_str("ROSS Shell v0.4  |  Type 'help' for commands", writer::DIM, 1);
-    wr.set_pos(writer::LEFT_MARGIN, TERM_Y + 22);
+    wr.set_pos(writer::LEFT_MARGIN, TERM_Y + 20);
 
     prompt(wr);
 }
@@ -153,7 +151,7 @@ fn cmd_clear(wr: &mut writer::Writer) {
     wr.fill_rect(0, TERM_Y, w, h - TERM_Y, writer::BG);
     wr.set_pos(writer::LEFT_MARGIN, TERM_Y + 6);
     wr.put_str("ROSS Shell v0.4  |  Type 'help' for commands", writer::DIM, 1);
-    wr.set_pos(writer::LEFT_MARGIN, TERM_Y + 22);
+    wr.set_pos(writer::LEFT_MARGIN, TERM_Y + 20);
 }
 
 fn cmd_memory(wr: &mut writer::Writer) {

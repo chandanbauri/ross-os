@@ -100,40 +100,28 @@ extern "C" fn kernel_main(info: &'static BootInfo) -> ! {
     // ── 6. Splash Screen ────────────────────────────────────────────────────
     let w  = info.screen_width;
     let h  = info.screen_height;
-    let cx = w / 2;
     let wr = writer::get_writer();
 
     wr.fill_rect(0, 0, w, h, writer::BG);
 
     let title       = "R.O.S.S.";
-    let title_scale = 5;
-    let title_w     = text_width(title, title_scale);
-    let title_y     = h / 2 - 80;
-    wr.set_pos(cx.saturating_sub(title_w / 2), title_y);
+    let title_scale = 1;
+    let title_x     = 20;
+    let title_y     = 20;
+    wr.set_pos(title_x, title_y);
     wr.put_str(title, writer::FG, title_scale);
 
-    let sep_w = (title_w * 6) / 5;
-    let sep_y = title_y + 8 * title_scale + 12;
-    wr.fill_rect(cx.saturating_sub(sep_w / 2), sep_y, sep_w, 1, writer::FG);
-
     let sub       = "Rapid Operating System Shell";
-    let sub_scale = 2;
-    let sub_w     = text_width(sub, sub_scale);
-    wr.set_pos(cx.saturating_sub(sub_w / 2), sep_y + 14);
+    let sub_scale = 1;
+    let sub_y     = title_y + 12;
+    wr.set_pos(title_x, sub_y);
     wr.put_str(sub, writer::DIM, sub_scale);
 
     let msg       = "Starting...";
-    let msg_scale = 2;
-    let msg_w     = text_width(msg, msg_scale);
-    let msg_y     = h / 2 + 40;
-    wr.set_pos(cx.saturating_sub(msg_w / 2), msg_y);
+    let msg_scale = 1;
+    let msg_y     = sub_y + 12;
+    wr.set_pos(title_x, msg_y);
     wr.put_str(msg, writer::FG, msg_scale);
-
-    let bar_w = 320_usize.min(w - 80);
-    let bar_x = cx.saturating_sub(bar_w / 2);
-    let bar_y = msg_y + 8 * msg_scale + 14;
-    wr.fill_rect(bar_x,     bar_y, bar_w,             4, writer::DIM);
-    wr.fill_rect(bar_x + 1, bar_y, bar_w * 70 / 100, 4, writer::FG);
 
     // ── 7. Kernel Log ────────────────────────────────────────────────────────
     wr.set_pos(50, h.saturating_sub(90));
