@@ -39,7 +39,15 @@ pub extern "sysv64" fn _start(info: &'static BootInfo) -> ! {
     // ── 3. 8259 PIC + Keyboard ──────────────────────────────────────────────
     unsafe {
         pic::init();
-        core::arch::asm!("sti"); // enable interrupts
+
+        // Drain any PS/2 scancodes that arrived before the kernel took control
+        // (e.g. the Enter pressed to run ./boot.sh is left in the hardware buffer).
+        // Status port 0x64 bit 0 = output buffer full; read 0x60 until it's empty.
+        while pic::inb(0x64) & 0x01 != 0 {
+            pic::inb(0x60); // discard buffered scancode
+        }
+
+        core::arch::asm!("sti"); // enable interrupts only after buffer is clean
     }
 
     // ── 4. Splash Screen ────────────────────────────────────────────────────
