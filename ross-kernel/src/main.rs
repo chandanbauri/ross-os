@@ -1,108 +1,108 @@
 #![no_std]
 #![no_main]
+#![feature(abi_x86_interrupt)]
+
+mod gdt;
+mod idt;
+mod keyboard;
+mod pic;
+mod pmm;
+mod writer;
 
 use core::panic::PanicInfo;
 use ross_common::BootInfo;
-use ross_common::font::FONT_BASIC;
 
-// ── Palette ───────────────────────────────────────────────────────────────────
-// BGRx u32 little-endian: byte0=Blue, byte1=Green, byte2=Red, byte3=0
-const BG:    u32 = 0x00_80_00_00;
-const FG:    u32 = 0x00_FF_FF_FF;
-const DIM:   u32 = 0x00_CC_CC_CC;
-const LINE:  u32 = 0x00_FF_FF_FF;
+static     GDT:          gdt::Gdt = gdt::Gdt::new();
+static mut IDT:          idt::Idt = idt::Idt::new();
 
-// ── Rendering primitives ──────────────────────────────────────────────────────
+#[repr(align(16))]
+struct KernelStack([u8; 0x4000]); // 16 KB
+static KERNEL_STACK: KernelStack = KernelStack([0; 0x4000]);
 
-/// Fill a rectangle with a solid color.
-#[inline]
-fn fill_rect(fb: *mut u32, stride: usize, x: usize, y: usize, w: usize, h: usize, color: u32) {
-    for row in y..y + h {
-        for col in x..x + w {
-            unsafe { *fb.add(row * stride + col) = color; }
-        }
-    }
-}
-
-/// Draw one character from the 8×8 bitmap font, scaled by `scale`.
-fn put_char(fb: *mut u32, stride: usize, x: usize, y: usize, ch: u8, color: u32, scale: usize) {
-    if ch as usize >= 128 { return; }
-    let glyph = FONT_BASIC[ch as usize];
-    for gy in 0..8 {
-        let row = glyph[gy];
-        for gx in 0..8 {
-            if (row >> (7 - gx)) & 1 == 1 {
-                fill_rect(fb, stride, x + gx * scale, y + gy * scale, scale, scale, color);
-            }
-        }
-    }
-}
-
-/// Draw a string left-to-right and return the x position after the last char.
-fn put_str(fb: *mut u32, stride: usize, x: usize, y: usize, s: &str, color: u32, scale: usize) {
-    let advance = 8 * scale + scale;
-    let mut cx = x;
-    for b in s.bytes() {
-        put_char(fb, stride, cx, y, b, color, scale);
-        cx += advance;
-    }
-}
-
-/// Return the pixel width of a string at the given scale.
-fn text_width(s: &str, scale: usize) -> usize {
-    let n = s.len();
-    if n == 0 { return 0; }
-    let advance = 8 * scale + scale;
-    n * advance - scale // no trailing gap
-}
-
-// ── Entry point ───────────────────────────────────────────────────────────────
 #[unsafe(no_mangle)]
 pub extern "sysv64" fn _start(info: &'static BootInfo) -> ! {
+    // ── 1. CPU Fundamentals ─────────────────────────────────────────────────
+    unsafe {
+        GDT.load();
+        core::arch::asm!("mov rsp, {0}", in(reg) KERNEL_STACK.0.as_ptr().add(0x4000));
+
+        writer::init(info);
+
+        let idt_ptr = core::ptr::addr_of_mut!(IDT);
+        idt::init_idt(&mut *idt_ptr);
+        (*idt_ptr).load();
+    }
+
+    // ── 2. Physical Memory Manager ──────────────────────────────────────────
+    pmm::init(info.memory_map, info.memory_map_len);
+
+    // ── 3. 8259 PIC + Keyboard ──────────────────────────────────────────────
+    unsafe {
+        pic::init();
+        core::arch::asm!("sti"); // enable interrupts
+    }
+
+    // ── 4. Splash Screen ────────────────────────────────────────────────────
     let w  = info.screen_width;
     let h  = info.screen_height;
-    let fb = info.framebuffer_ptr as *mut u32;
     let cx = w / 2;
+    let wr = writer::get_writer();
 
-    fill_rect(fb, w, 0, 0, w, h, BG);
+    wr.fill_rect(0, 0, w, h, writer::BG);
 
-
+    // Title
     let title       = "R.O.S.S.";
     let title_scale = 5;
     let title_w     = text_width(title, title_scale);
     let title_y     = h / 2 - 80;
-    put_str(fb, w, cx - title_w / 2, title_y, title, FG, title_scale);
+    wr.set_pos(cx.saturating_sub(title_w / 2), title_y);
+    wr.put_str(title, writer::FG, title_scale);
 
+    // Separator
     let sep_w = (title_w * 6) / 5;
     let sep_y = title_y + 8 * title_scale + 12;
-    fill_rect(fb, w, cx - sep_w / 2, sep_y, sep_w, 1, LINE);
+    wr.fill_rect(cx.saturating_sub(sep_w / 2), sep_y, sep_w, 1, writer::FG);
 
+    // Subtitle
     let sub       = "Rapid Operating System Shell";
     let sub_scale = 2;
     let sub_w     = text_width(sub, sub_scale);
-    let sub_y     = sep_y + 14;
-    put_str(fb, w, cx - sub_w / 2, sub_y, sub, DIM, sub_scale);
+    wr.set_pos(cx.saturating_sub(sub_w / 2), sep_y + 14);
+    wr.put_str(sub, writer::DIM, sub_scale);
 
+    // "Starting..."
     let msg       = "Starting...";
     let msg_scale = 2;
     let msg_w     = text_width(msg, msg_scale);
     let msg_y     = h / 2 + 40;
-    put_str(fb, w, cx - msg_w / 2, msg_y, msg, FG, msg_scale);
+    wr.set_pos(cx.saturating_sub(msg_w / 2), msg_y);
+    wr.put_str(msg, writer::FG, msg_scale);
 
+    // Progress bar
     let bar_w = 320_usize.min(w - 80);
-    let bar_h = 4;
-    let bar_x = cx - bar_w / 2;
+    let bar_x = cx.saturating_sub(bar_w / 2);
     let bar_y = msg_y + 8 * msg_scale + 14;
-    fill_rect(fb, w, bar_x,     bar_y, bar_w,         bar_h, DIM);
-    fill_rect(fb, w, bar_x + 1, bar_y, bar_w * 70 / 100, bar_h, FG);
+    wr.fill_rect(bar_x,     bar_y, bar_w,         4, writer::DIM);
+    wr.fill_rect(bar_x + 1, bar_y, bar_w * 70 / 100, 4, writer::FG);
 
-    // 8. Halt — nothing more to do yet
+    // ── 5. Kernel Log (bottom of screen) ────────────────────────────────────
+    wr.set_pos(50, h.saturating_sub(90));
+    kprintln!("Memory: {} MiB free  ({} regions)", pmm::free_mib(), info.memory_map_len);
+    kprintln!("GDT loaded  |  IDT active  |  PIC initialised");
+    kprintln!("Press ENTER to continue...");
+
     loop {
         core::hint::spin_loop();
     }
 }
 
+fn text_width(s: &str, scale: usize) -> usize {
+    let n = s.len();
+    if n == 0 { return 0; }
+    n * (8 * scale + scale) - scale
+}
+
 #[panic_handler]
-fn panic(_: &PanicInfo) -> ! {
+fn panic(_info: &PanicInfo) -> ! {
     loop {}
 }

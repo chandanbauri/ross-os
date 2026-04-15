@@ -1,5 +1,6 @@
 #!/bin/bash
-UEFI_FIRMWARE="/opt/homebrew/Cellar/qemu/10.2.2/share/qemu/edk2-x86_64-code.fd"
+UEFI_FIRMWARE="/opt/homebrew/share/qemu/edk2-x86_64-code.fd"
+export PATH="/opt/homebrew/bin:$PATH"
 
 # Build everything
 cargo build -p rb-loader --target x86_64-unknown-uefi
@@ -16,4 +17,5 @@ rust-objcopy -O binary target/x86_64-unknown-none/debug/ross-kernel build/kernel
 qemu-system-x86_64 \
     -drive if=pflash,format=raw,readonly=on,file="$UEFI_FIRMWARE" \
     -drive format=raw,file=fat:rw:build \
-    -m 512M -vga std -net none -serial stdio -no-reboot
+    -m 512M -vga std -net none -serial stdio -no-reboot \
+    -display cocoa,zoom-to-fit=off
