@@ -1,5 +1,6 @@
 use crate::keyboard;
 use crate::pic;
+use crate::pit;
 use crate::writer;
 use core::mem::size_of;
 
@@ -85,14 +86,20 @@ pub fn init_idt(idt: &mut Idt) {
     idt.entries[13].set_handler(general_protection_fault_handler as *const u8);
     idt.entries[14].set_handler(page_fault_handler as *const u8);
 
-    // PIC IRQ vector stubs (32-47): prevents GP from unhandled spurious IRQs
+    // PIC IRQ stubs (32-47): prevents GP from unhandled spurious IRQs
     for i in 32usize..=47 {
-        if i != 33 {
-            idt.entries[i].set_handler(irq_stub_handler as *const u8);
-        }
+        idt.entries[i].set_handler(irq_stub_handler as *const u8);
     }
-    // IRQ1 (keyboard) after PIC remap → vector 33
+    // IRQ0 (PIT timer) → vector 32
+    idt.entries[32].set_handler(timer_handler as *const u8);
+    // IRQ1 (PS/2 keyboard) → vector 33
     idt.entries[33].set_handler(keyboard::handler as *const u8);
+}
+
+/// PIT timer handler (IRQ0 → vector 32).
+extern "x86-interrupt" fn timer_handler(_frame: InterruptStackFrame) {
+    pit::tick();
+    unsafe { pic::send_eoi(0); }
 }
 
 /// Generic stub for all unused hardware IRQs — just sends EOI and returns.

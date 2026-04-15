@@ -57,8 +57,8 @@ pub unsafe fn init() {
         outb(PIC1_DATA, 0x01); io_wait();
         outb(PIC2_DATA, 0x01); io_wait();
 
-        // OCW1: mask all IRQs except IRQ1 (keyboard)
-        outb(PIC1_DATA, 0xFD); // 1111_1101 → IRQ1 unmasked
+        // OCW1: mask all IRQs except IRQ0 (timer) and IRQ1 (keyboard)
+        outb(PIC1_DATA, 0xFC); // 1111_1100 → IRQ0 + IRQ1 unmasked
         outb(PIC2_DATA, 0xFF); // all slave IRQs masked
     }
 }

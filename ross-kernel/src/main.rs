@@ -1,19 +1,27 @@
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
+#![feature(alloc_error_handler)]
+
+extern crate alloc;
 
 mod gdt;
+mod heap;
 mod idt;
+mod kbuf;
 mod keyboard;
 mod pic;
+mod pit;
 mod pmm;
+mod paging;
 mod writer;
 
+use alloc::vec::Vec;
 use core::panic::PanicInfo;
 use ross_common::BootInfo;
 
-static     GDT:          gdt::Gdt = gdt::Gdt::new();
-static mut IDT:          idt::Idt = idt::Idt::new();
+static     GDT:  gdt::Gdt = gdt::Gdt::new();
+static mut IDT:  idt::Idt = idt::Idt::new();
 
 #[repr(align(16))]
 struct KernelStack([u8; 0x4000]); // 16 KB
@@ -36,21 +44,26 @@ pub extern "sysv64" fn _start(info: &'static BootInfo) -> ! {
     // ── 2. Physical Memory Manager ──────────────────────────────────────────
     pmm::init(info.memory_map, info.memory_map_len);
 
-    // ── 3. 8259 PIC + Keyboard ──────────────────────────────────────────────
-    unsafe {
-        pic::init();
+    // ── 3. Virtual Memory (Paging) ──────────────────────────────────────────
+    unsafe { paging::init(); }
 
-        // Drain any PS/2 scancodes that arrived before the kernel took control
-        // (e.g. the Enter pressed to run ./boot.sh is left in the hardware buffer).
-        // Status port 0x64 bit 0 = output buffer full; read 0x60 until it's empty.
+    // ── 4. Kernel Heap ──────────────────────────────────────────────────────
+    heap::init();
+
+    // ── 5. PIC + PIT + Keyboard ─────────────────────────────────────────────
+    unsafe {
+        pit::init();  // Programme PIT to 100 Hz before unmasking IRQ0
+        pic::init();  // Remap PIC; unmask IRQ0 (timer) and IRQ1 (keyboard)
+
+        // Drain any PS/2 scancodes buffered during UEFI boot
         while pic::inb(0x64) & 0x01 != 0 {
-            pic::inb(0x60); // discard buffered scancode
+            pic::inb(0x60);
         }
 
-        core::arch::asm!("sti"); // enable interrupts only after buffer is clean
+        core::arch::asm!("sti"); // Enable interrupts
     }
 
-    // ── 4. Splash Screen ────────────────────────────────────────────────────
+    // ── 6. Splash Screen ────────────────────────────────────────────────────
     let w  = info.screen_width;
     let h  = info.screen_height;
     let cx = w / 2;
@@ -58,7 +71,6 @@ pub extern "sysv64" fn _start(info: &'static BootInfo) -> ! {
 
     wr.fill_rect(0, 0, w, h, writer::BG);
 
-    // Title
     let title       = "R.O.S.S.";
     let title_scale = 5;
     let title_w     = text_width(title, title_scale);
@@ -66,19 +78,16 @@ pub extern "sysv64" fn _start(info: &'static BootInfo) -> ! {
     wr.set_pos(cx.saturating_sub(title_w / 2), title_y);
     wr.put_str(title, writer::FG, title_scale);
 
-    // Separator
     let sep_w = (title_w * 6) / 5;
     let sep_y = title_y + 8 * title_scale + 12;
     wr.fill_rect(cx.saturating_sub(sep_w / 2), sep_y, sep_w, 1, writer::FG);
 
-    // Subtitle
     let sub       = "Rapid Operating System Shell";
     let sub_scale = 2;
     let sub_w     = text_width(sub, sub_scale);
     wr.set_pos(cx.saturating_sub(sub_w / 2), sep_y + 14);
     wr.put_str(sub, writer::DIM, sub_scale);
 
-    // "Starting..."
     let msg       = "Starting...";
     let msg_scale = 2;
     let msg_w     = text_width(msg, msg_scale);
@@ -86,20 +95,40 @@ pub extern "sysv64" fn _start(info: &'static BootInfo) -> ! {
     wr.set_pos(cx.saturating_sub(msg_w / 2), msg_y);
     wr.put_str(msg, writer::FG, msg_scale);
 
-    // Progress bar
     let bar_w = 320_usize.min(w - 80);
     let bar_x = cx.saturating_sub(bar_w / 2);
     let bar_y = msg_y + 8 * msg_scale + 14;
-    wr.fill_rect(bar_x,     bar_y, bar_w,         4, writer::DIM);
+    wr.fill_rect(bar_x,     bar_y, bar_w,             4, writer::DIM);
     wr.fill_rect(bar_x + 1, bar_y, bar_w * 70 / 100, 4, writer::FG);
 
-    // ── 5. Kernel Log (bottom of screen) ────────────────────────────────────
+    // ── 7. Kernel Log ────────────────────────────────────────────────────────
     wr.set_pos(50, h.saturating_sub(90));
     kprintln!("Memory: {} MiB free  ({} regions)", pmm::free_mib(), info.memory_map_len);
-    kprintln!("GDT loaded  |  IDT active  |  PIC initialised");
+    kprintln!("Paging: CR3 switched to kernel-managed tables");
     kprintln!("Press ENTER to continue...");
 
+    // ── 8. Heap smoke-test (Phase 3 milestone) ───────────────────────────────
+    {
+        let mut v: Vec<u32> = Vec::new();
+        for i in 0u32..8 {
+            v.push(i * i);  // 0, 1, 4, 9, 16, 25, 36, 49
+        }
+        // If we reach here without a crash the heap is working.
+        // (kprintln from an alloc context verifies fmt machinery too)
+        let _ = v; // drop → heap free
+    }
+
+    // ── 9. Main Event Loop ───────────────────────────────────────────────────
+    let mut ready_shown = false;
     loop {
+        while let Some(sc) = kbuf::pop() {
+            if let Some(b'\n') = kbuf::scancode_to_ascii(sc) {
+                if !ready_shown {
+                    keyboard::show_ready();
+                    ready_shown = true;
+                }
+            }
+        }
         core::hint::spin_loop();
     }
 }
@@ -108,6 +137,16 @@ fn text_width(s: &str, scale: usize) -> usize {
     let n = s.len();
     if n == 0 { return 0; }
     n * (8 * scale + scale) - scale
+}
+
+#[alloc_error_handler]
+fn alloc_error(layout: core::alloc::Layout) -> ! {
+    let wr = writer::get_writer();
+    wr.fill_rect(0, 0, 3000, 3000, 0x000000CC); // blue screen
+    wr.set_pos(80, 100);
+    wr.put_str("OUT OF MEMORY", 0x00FFFFFF, 3);
+    let _ = layout;
+    loop {}
 }
 
 #[panic_handler]

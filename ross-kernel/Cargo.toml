@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-ross-common = { path = "../ross-common" }
+ross-common              = { path = "../ross-common" }
+linked_list_allocator    = { version = "0.10", default-features = false, features = ["use_spin"] }
 
 [profile.dev]
 panic = "abort"
