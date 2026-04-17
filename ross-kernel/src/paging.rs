@@ -79,8 +79,9 @@ pub fn create_user_address_space() -> u64 {
     let pml4 = unsafe { &mut *(phys_to_virt(pml4_phys) as *mut PageTable) };
     pml4.entries.fill(0);
 
-    // Copy kernel mappings (index 511)
+    // Copy kernel mappings (Lower half identity + Higher half alias)
     unsafe {
+        pml4.entries[0]   = PML4.entries[0];
         pml4.entries[511] = PML4.entries[511];
     }
 

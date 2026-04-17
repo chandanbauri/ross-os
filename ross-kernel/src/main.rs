@@ -63,9 +63,7 @@ extern "C" fn kernel_main(info: &'static BootInfo) -> ! {
     serial::serial_print("Entered kernel_main\n");
     // ── 1. CPU Fundamentals ─────────────────────────────────────────────────
     unsafe {
-        let gdt_ptr = core::ptr::addr_of_mut!(GDT);
-        (*gdt_ptr).load();
-
+        GDT.load();
         serial::serial_print("GDT loaded\n");
 
         // Zero BSS section while on our own writable stack
@@ -106,14 +104,14 @@ extern "C" fn kernel_main(info: &'static BootInfo) -> ! {
     // ── 6. Tasking & Scheduler ──────────────────────────────────────────────
     {
         let mut sched = task::SCHEDULER.lock();
-        let cr3: u64;
-        unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3); }
+        let _cr3: u64;
+        unsafe { core::arch::asm!("mov {}, cr3", out(reg) _cr3); }
 
         sched.set_main(task::Task::main_task());
         
         // Kernel tasks: use internal stack allocation
-        sched.add_task(task::Task::new(task_a as *const () as usize, 0, cr3, false));
-        sched.add_task(task::Task::new(task_b as *const () as usize, 0, cr3, false));
+        // sched.add_task(task::Task::new(task_a as *const () as usize, 0, cr3, false));
+        // sched.add_task(task::Task::new(task_b as *const () as usize, 0, cr3, false));
     }
 
     // ── 7. System Calls ─────────────────────────────────────────────────────

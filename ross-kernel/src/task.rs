@@ -36,9 +36,11 @@ pub struct FullContext {
 pub struct Task {
     pub id: TaskId,
     pub stack: Vec<u8>,
+    pub kernel_stack_top: u64,
     pub rsp: u64,
     pub cr3: u64,
     pub state: TaskState,
+    pub is_user: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,9 +89,11 @@ impl Task {
         Task {
             id,
             stack,
+            kernel_stack_top: internal_stack_top as u64,
             rsp: rsp as u64,
             cr3,
             state: TaskState::Ready,
+            is_user,
         }
     }
 
@@ -100,10 +104,12 @@ impl Task {
 
         Task {
             id: TaskId(NEXT_ID.fetch_add(1, Ordering::SeqCst)),
-            stack: Vec::new(), // Not used for main task
-            rsp: 0,            // Will be set on first switch
+            stack: Vec::new(), 
+            kernel_stack_top: 0, // Main task uses the stack from _start
+            rsp: 0,            
             cr3,
             state: TaskState::Running,
+            is_user: false,
         }
     }
 }
@@ -148,6 +154,13 @@ impl Scheduler {
             next.state = TaskState::Running;
             let next_rsp = next.rsp;
             let next_cr3 = next.cr3;
+            
+        // Update TSS stack for future interrupts if this is a user task
+        if next.is_user {
+            crate::serial::serial_print("[SCHED] Switching to User Task\n");
+            crate::gdt::set_tss_stack(next.kernel_stack_top);
+        }
+
             self.current_task = Some(next);
             TaskSwitchResult { rsp: next_rsp, cr3: next_cr3 }
         } else {

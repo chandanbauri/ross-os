@@ -46,7 +46,7 @@ impl ElfHeader {
     pub fn program_headers<'a>(&self, data: &'a [u8]) -> &'a [ProgramHeader] {
         let start = self.e_phoff as usize;
         let count = self.e_phnum as usize;
-        let size = self.e_phentsize as usize;
+        let _size = self.e_phentsize as usize;
         
         unsafe {
             core::slice::from_raw_parts(

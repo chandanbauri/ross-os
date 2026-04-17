@@ -1,0 +1,7 @@
+[target.x86_64-unknown-none]
+rustflags = [
+    "-C", "link-arg=-Tross-user/init/linker.ld",
+]
+
+[build]
+target = "x86_64-unknown-none"

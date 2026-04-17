@@ -75,12 +75,20 @@ impl TarFileSystem {
                 break;
             }
 
-            let name = str::from_utf8(&header.name).unwrap_or("").trim_matches('\0');
-            if name.is_empty() { break; }
+            let mut name = str::from_utf8(&header.name).unwrap_or("").trim_matches('\0');
+            if name.starts_with("./") {
+                name = &name[2..];
+            }
 
             // Parse size (octal)
             let size_str = str::from_utf8(&header.size).unwrap_or("0");
             let size = usize::from_str_radix(size_str.trim_matches('\0').trim(), 8).unwrap_or(0);
+
+            if name.is_empty() || name == "." {
+                // Skip empty or root directory entries (padded to 512 byte blocks)
+                offset += 512 + ((size + 511) & !511);
+                continue;
+            }
 
             let file_data = &data[offset + 512 .. offset + 512 + size];
             

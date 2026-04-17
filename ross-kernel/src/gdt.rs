@@ -42,30 +42,50 @@ impl Tss {
 }
 
 pub static mut TSS: Tss = Tss::new();
+static mut DOUBLE_FAULT_STACK: [u8; 0x4000] = [0; 0x4000];
 
-#[repr(C, align(8))]
+#[repr(C, align(16))]
 pub struct Gdt {
-    pub entries: [u64; 6],
+    pub entries: [u64; 8],
 }
 
 #[allow(dead_code)] pub const KERNEL_CODE_SELECTOR: u16 = 1 << 3;
 #[allow(dead_code)] pub const KERNEL_DATA_SELECTOR: u16 = 2 << 3;
 #[allow(dead_code)] pub const USER_DATA_SELECTOR:   u16 = 3 << 3;
 #[allow(dead_code)] pub const USER_CODE_SELECTOR:   u16 = 4 << 3;
+pub const TSS_SELECTOR:             u16 = 5 << 3;
 
 impl Gdt {
     pub const fn new() -> Self {
-        let mut entries = [0u64; 6];
+        let mut entries = [0u64; 8];
         entries[0] = 0;
         entries[1] = create_gdt_entry(0, 0, 0x9A, 0x2); // Kernel Code
         entries[2] = create_gdt_entry(0, 0, 0x92, 0x0); // Kernel Data
         entries[3] = create_gdt_entry(0, 0, 0xF2, 0x0); // User Data
         entries[4] = create_gdt_entry(0, 0, 0xFA, 0x2); // User Code
-        entries[5] = create_gdt_entry(0, 0xFFFFF, 0x9A, 0x4); 
+        
+        // entries[5] and entries[6] will be TSS (set in load)
+        
         Self { entries }
     }
 
-    pub fn load(&'static self) {
+    pub fn load(&'static mut self) {
+        // Setup TSS entry (16 bytes)
+        let tss_addr = unsafe { core::ptr::addr_of!(TSS) as u64 };
+        let tss_limit = (size_of::<Tss>() - 1) as u64;
+        
+        // Setup IST1 for Double Faults
+        unsafe {
+            TSS.ist1 = core::ptr::addr_of!(DOUBLE_FAULT_STACK) as u64 + 0x4000;
+        }
+
+        self.entries[5] = (tss_limit & 0xFFFF)
+                        | ((tss_addr & 0xFFFFFF) << 16)
+                        | (0x89u64 << 40) // Access: Present, TSS type
+                        | (((tss_limit >> 16) & 0xF) << 48)
+                        | (((tss_addr >> 24) & 0xFF) << 56);
+        self.entries[6] = tss_addr >> 32;
+
         let descriptor = GdtDescriptor {
             limit: (size_of::<Self>() - 1) as u16,
             base: self as *const _ as u64,
@@ -81,10 +101,19 @@ impl Gdt {
                 "push rax",
                 "retfq",
                 "2:",
+                "mov ax, {tss_sel}",
+                "ltr ax",
                 desc = in(reg) &descriptor,
+                tss_sel = const TSS_SELECTOR,
                 out("rax") _,
             );
         }
+    }
+}
+
+pub fn set_tss_stack(stack: u64) {
+    unsafe {
+        TSS.rsp0 = stack;
     }
 }
 

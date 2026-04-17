@@ -148,16 +148,13 @@ fn cmd_ls(wr: &mut writer::Writer) {
 }
 
 fn cmd_reboot() -> ! {
-    // Triple fault reboot trick
+    // PS/2 Controller Reset (command 0xFE to port 0x64)
     unsafe {
-        core::arch::asm!(
-            "cli",
-            "lidt [rax]",
-            "int 3",
-            in("rax") 0,
-        );
+        crate::pic::outb(0x64, 0xFE);
     }
-    loop {}
+    loop {
+        unsafe { core::arch::asm!("hlt"); }
+    }
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────────

@@ -83,6 +83,7 @@ pub fn init_idt(idt: &mut Idt) {
     idt.entries[3].set_handler(breakpoint_handler as *const u8);
     idt.entries[6].set_handler(invalid_opcode_handler as *const u8);
     idt.entries[8].set_handler(double_fault_handler as *const u8);
+    idt.entries[8].ist = 1; // Use IST1 for stable DF handling
     idt.entries[13].set_handler(general_protection_fault_handler as *const u8);
     idt.entries[14].set_handler(page_fault_handler as *const u8);
 
@@ -143,7 +144,7 @@ extern "x86-interrupt" fn irq_stub_handler(_frame: InterruptStackFrame) {
 }
 
 extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {
-    panic_screen("DIVIDE BY ZERO", &stack_frame);
+    panic_screen("DIVIDE BY ZERO", &stack_frame, 0);
 }
 
 extern "x86-interrupt" fn breakpoint_handler(_stack_frame: InterruptStackFrame) {
@@ -153,36 +154,43 @@ extern "x86-interrupt" fn breakpoint_handler(_stack_frame: InterruptStackFrame) 
 }
 
 extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
-    panic_screen("INVALID OPCODE", &stack_frame);
+    panic_screen("INVALID OPCODE", &stack_frame, 0);
 }
 
-extern "x86-interrupt" fn double_fault_handler(stack_frame: InterruptStackFrame, _error_code: u64) -> ! {
-    panic_screen("DOUBLE FAULT", &stack_frame);
+extern "x86-interrupt" fn double_fault_handler(stack_frame: InterruptStackFrame, error_code: u64) -> ! {
+    panic_screen("DOUBLE FAULT", &stack_frame, error_code);
     loop {}
 }
 
-extern "x86-interrupt" fn general_protection_fault_handler(stack_frame: InterruptStackFrame, _error_code: u64) {
-    panic_screen("GENERAL PROTECTION FAULT", &stack_frame);
+extern "x86-interrupt" fn general_protection_fault_handler(stack_frame: InterruptStackFrame, error_code: u64) {
+    panic_screen("GENERAL PROTECTION FAULT", &stack_frame, error_code);
 }
 
-extern "x86-interrupt" fn page_fault_handler(stack_frame: InterruptStackFrame, _error_code: u64) {
-    panic_screen("PAGE FAULT", &stack_frame);
+extern "x86-interrupt" fn page_fault_handler(stack_frame: InterruptStackFrame, error_code: u64) {
+    panic_screen("PAGE FAULT", &stack_frame, error_code);
 }
 
-fn panic_screen(name: &str, _stack_frame: &InterruptStackFrame) {
-    crate::serial::serial_print("panic_screen TRIGGERED: ");
-    crate::serial::serial_print(name);
-    crate::serial::serial_print("\n");
+fn panic_screen(name: &str, stack_frame: &InterruptStackFrame, error_code: u64) {
+    let cr2: u64;
+    unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2); }
+
+    let mut serial = crate::serial::SerialPort;
+    use core::fmt::Write;
+    let _ = writeln!(serial, "\n!!!!!!!! KERNEL PANIC: {} !!!!!!!!", name);
+    let _ = writeln!(serial, "  RIP:   0x{:016x}", stack_frame.instruction_pointer);
+    let _ = writeln!(serial, "  CS:    0x{:02x}", stack_frame.code_segment);
+    let _ = writeln!(serial, "  CR2:   0x{:016x}", cr2);
+    let _ = writeln!(serial, "  ERROR: 0x{:x}", error_code);
+    let _ = writeln!(serial, "  RSP:   0x{:016x}\n", stack_frame.stack_pointer);
+
     let writer = writer::get_writer();
     writer.fill_rect(0, 0, 10000, 10000, 0x000000FF); // Red Screen
     writer.set_pos(100, 100);
-    writer.put_str("!!!!!!!! KERNEL PANIC !!!!!!!!", 0x00FFFFFF, 3);
+    writer.put_str("!!!!!!!! KERNEL PANIC !!!!!!!!", 0x00FFFFFF, 2);
     writer.set_pos(100, 150);
-    writer.put_str("EXCEPTION: ", 0x00FFFFFF, 2);
-    writer.put_str(name, 0x00FFFF00, 2);
+    let _ = write!(writer, "EXCEPTION: {} (RIP: 0x{:x})", name, stack_frame.instruction_pointer);
     writer.set_pos(100, 200);
-    writer.put_str("System halted to prevent damage.", 0x00FFFFFF, 2);
+    let _ = write!(writer, "CR2: 0x{:x}  ERROR: 0x{:x}", cr2, error_code);
     
-    // We could print registers here in the future
     loop {}
 }

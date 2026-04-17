@@ -93,10 +93,11 @@ extern "C" fn syscall_dispatch(id: u64, arg1: u64, arg2: u64, _arg3: u64) -> u64
 core::arch::global_asm!(
     ".global syscall_handler_stub",
     "syscall_handler_stub:",
-    // When 'syscall' is called, RIP is in RCX and RFLAGS is in R11.
-    // RSP is NOT switched.
-    // We must manually switch to a kernel stack if we were in user land.
-    // For now, since we are in kernel land, we just save registers.
+    // Safe stack switch if needed, but for now just debug
+    "push rax", "push rdx",
+    "mov al, 0x53", "mov dx, 0x3F8", "out dx, al",
+    "pop rdx", "pop rax",
+    
     "push r11", // Save flags
     "push rcx", // Save return address
     
@@ -114,9 +115,7 @@ core::arch::global_asm!(
     
     "pop rcx", // Restore RIP
     "pop r11", // Restore RFLAGS
-    // "sysretq" // Temporary comment out
-    "sti",
-    "jmp rcx"
+    "sysretq"
 );
 
 unsafe extern "C" {
