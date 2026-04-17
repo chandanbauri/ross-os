@@ -114,6 +114,17 @@ fn execute(input: &str, wr: &mut writer::Writer) {
         "memory"  => cmd_memory(wr),
         "uptime"  => cmd_uptime(wr),
         "version" => cmd_version(wr),
+        "ls"      => cmd_ls(wr),
+        "reboot"  => cmd_reboot(),
+        "exec"    => {
+            if let Some(path) = parts.next() {
+                if let Err(_) = crate::task::spawn_process(path) {
+                    wr.put_str("  Error: failed to spawn process\n", writer::RED, SCALE);
+                }
+            } else {
+                wr.put_str("  Usage: exec <path>\n", writer::DIM, SCALE);
+            }
+        }
         ""        => {}
         other     => {
             wr.put_str("  Error: unknown command '", writer::RED, SCALE);
@@ -123,15 +134,44 @@ fn execute(input: &str, wr: &mut writer::Writer) {
     }
 }
 
+fn cmd_ls(wr: &mut writer::Writer) {
+    if let Ok(files) = crate::vfs::VFS.lock().root_node.as_ref().map(|n| n.readdir()).unwrap_or(Err(())) {
+        wr.put_str("  Files in /:\n", writer::ACCENT, SCALE);
+        for file in files {
+            wr.put_str("    ", writer::FG, SCALE);
+            wr.put_str(&file, writer::FG, SCALE);
+            wr.put_char(b'\n', writer::FG, SCALE);
+        }
+    } else {
+        wr.put_str("  Error: failed to list directory\n", writer::RED, SCALE);
+    }
+}
+
+fn cmd_reboot() -> ! {
+    // Triple fault reboot trick
+    unsafe {
+        core::arch::asm!(
+            "cli",
+            "lidt [rax]",
+            "int 3",
+            in("rax") 0,
+        );
+    }
+    loop {}
+}
+
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 fn cmd_help(wr: &mut writer::Writer) {
     let cmds: &[(&str, &str)] = &[
         ("help",    "Show this help message"),
         ("clear",   "Clear the terminal area"),
+        ("ls",      "List files in the RAMDisk"),
+        ("exec",    "Execute an ELF binary (exec <path>)"),
         ("memory",  "Show physical memory statistics"),
         ("uptime",  "Show system uptime"),
         ("version", "Show ROSS version info"),
+        ("reboot",  "Restart the system"),
     ];
     wr.put_str("  Available commands:\n", writer::ACCENT, SCALE);
     for (name, desc) in cmds {
@@ -192,7 +232,7 @@ fn cmd_uptime(wr: &mut writer::Writer) {
 
 fn cmd_version(wr: &mut writer::Writer) {
     wr.put_str("  R.O.S.S.  Rapid Operating System Shell\n", writer::ACCENT, SCALE);
-    wr.put_str("  Phase 4  |  x86_64  |  Bare Metal\n", writer::DIM, SCALE);
+    wr.put_str("  Phase 6  |  x86_64  |  Bare Metal\n", writer::DIM, SCALE);
 }
 
 // ── Utility ───────────────────────────────────────────────────────────────────

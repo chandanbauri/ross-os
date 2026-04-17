@@ -20,6 +20,7 @@ mod syscall;
 mod vfs;
 mod ramfs;
 mod writer;
+mod elf;
 mod serial;
 
 use alloc::vec::Vec;
@@ -105,9 +106,14 @@ extern "C" fn kernel_main(info: &'static BootInfo) -> ! {
     // ── 6. Tasking & Scheduler ──────────────────────────────────────────────
     {
         let mut sched = task::SCHEDULER.lock();
+        let cr3: u64;
+        unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3); }
+
         sched.set_main(task::Task::main_task());
-        sched.add_task(task::Task::new(task_a as *const () as usize, 0x4000));
-        sched.add_task(task::Task::new(task_b as *const () as usize, 0x4000));
+        
+        // Kernel tasks: use internal stack allocation
+        sched.add_task(task::Task::new(task_a as *const () as usize, 0, cr3, false));
+        sched.add_task(task::Task::new(task_b as *const () as usize, 0, cr3, false));
     }
 
     // ── 7. System Calls ─────────────────────────────────────────────────────
@@ -115,21 +121,27 @@ extern "C" fn kernel_main(info: &'static BootInfo) -> ! {
 
     // ── 8. Virtual File System ──────────────────────────────────────────────
     {
-        static RAMDISK: &[u8] = include_bytes!("../../assets/ramdisk.tar");
-        let ramfs = alloc::sync::Arc::new(ramfs::TarFileSystem::new(RAMDISK));
-        vfs::init(ramfs);
-        serial::serial_print("VFS initialized with TarFS\n");
+        if !info.ramdisk_addr.is_null() && info.ramdisk_size > 0 {
+            let ramdisk: &'static [u8] = unsafe {
+                core::slice::from_raw_parts(info.ramdisk_addr, info.ramdisk_size)
+            };
+            let ramfs = alloc::sync::Arc::new(ramfs::TarFileSystem::new(ramdisk));
+            vfs::init(ramfs);
+            serial::serial_print("VFS: Mounted dynamic Initrd\n");
 
-        // Test reading a file
-        if let Ok(file) = vfs::open("hello.txt") {
-            let mut buf = [0u8; 64];
-            if let Ok(n) = file.read(0, &mut buf) {
-                serial::serial_print("VFS Test: read 'hello.txt' -> ");
-                serial::serial_print(core::str::from_utf8(&buf[..n]).unwrap_or("error"));
-                serial::serial_print("\n");
+            // Test reading a file
+            if let Ok(file) = vfs::open("motd.txt") {
+                let mut buf = [0u8; 64];
+                if let Ok(n) = file.read(0, &mut buf) {
+                    serial::serial_print("VFS Test: read 'motd.txt' -> ");
+                    serial::serial_print(core::str::from_utf8(&buf[..n]).unwrap_or("error"));
+                    serial::serial_print("\n");
+                }
+            } else {
+                serial::serial_print("VFS Test: failed to open 'motd.txt'\n");
             }
         } else {
-            serial::serial_print("VFS Test: failed to open 'hello.txt'\n");
+            serial::serial_print("VFS: No Initrd passed from bootloader\n");
         }
     }
 

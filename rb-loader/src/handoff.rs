@@ -47,6 +47,49 @@ pub fn load_kernel_file() -> *const u8 {
     addr.as_ptr() as *const u8
 }
 
+pub fn load_ramdisk_file() -> (*const u8, usize) {
+    let fs_handle = uefi::boot::get_handle_for_protocol::<SimpleFileSystem>().unwrap();
+    let mut fs = uefi::boot::open_protocol_exclusive::<SimpleFileSystem>(fs_handle).unwrap();
+    let mut root = fs.open_volume().unwrap();
+
+    let handle = match root.open(
+        uefi::cstr16!("initrd.tar"),
+        FileMode::Read,
+        FileAttribute::empty(),
+    ) {
+        Ok(h) => h,
+        Err(_) => {
+            return (core::ptr::null(), 0);
+        }
+    };
+
+    let mut file = match handle.into_type().unwrap() {
+        uefi::proto::media::file::FileType::Regular(f) => f,
+        _ => return (core::ptr::null(), 0),
+    };
+
+    let mut info_buf = [0u8; 128];
+    let size = file
+        .get_info::<FileInfo>(&mut info_buf)
+        .unwrap()
+        .file_size() as usize;
+    let pages = (size + 4095) / 4096;
+
+    let addr = match uefi::boot::allocate_pages(
+        uefi::boot::AllocateType::AnyPages,
+        MemoryType::LOADER_DATA,
+        pages,
+    ) {
+        Ok(a) => a,
+        Err(_) => return (core::ptr::null(), 0),
+    };
+
+    let buffer = unsafe { core::slice::from_raw_parts_mut(addr.as_ptr(), size) };
+    file.read(buffer).unwrap();
+
+    (addr.as_ptr() as *const u8, size)
+}
+
 #[repr(align(4096))]
 struct PageTable([u64; 512]);
 

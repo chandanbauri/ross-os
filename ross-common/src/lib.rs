@@ -28,4 +28,6 @@ pub struct BootInfo {
     pub screen_height:      usize,
     pub memory_map:         *const MemoryRegion,
     pub memory_map_len:     usize,
+    pub ramdisk_addr:       *const u8,
+    pub ramdisk_size:       usize,
 }

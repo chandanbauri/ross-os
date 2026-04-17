@@ -13,22 +13,22 @@ To prevent breaking the existing `rb-loader` to `ross-kernel` handoff, the Initr
 ---
 
 ## 1. Initial RAM Disk (Initrd)
-- [ ] Update `ross_common::BootInfo` to include `ramdisk_addr` and `ramdisk_size`.
-- [ ] Update `boot.sh` to compile a `build/initrd.tar` archive from a local directory.
-- [ ] Modify `rb-loader/src/handoff.rs` to find and allocate pages for `initrd.tar` from the FAT partition.
-- [ ] **Milestone:** Kernel logs the RAMDisk memory address and size upon successful handoff.
+- [x] Update `ross_common::BootInfo` to include `ramdisk_addr` and `ramdisk_size`.
+- [x] Update `boot.sh` to compile a `build/initrd.tar` archive from a local directory.
+- [x] Modify `rb-loader/src/handoff.rs` to find and allocate pages for `initrd.tar` from the FAT partition.
+- [x] **Milestone:** Kernel logs the RAMDisk memory address and size upon successful handoff.
 
 ## 2. Virtual File System (VFS) & TarFS
-- [ ] Implement a lightweight TarFS parser in the kernel to iterate over 512-byte blocks.
-- [ ] Abstract file operations into a basic `read_file(name: &str) -> Option<&[u8]>` function.
-- [ ] **Milestone:** The kernel can successfully print the contents of a text file (e.g., `motd.txt`) bundled inside the RAMDisk to the framebuffer.
+- [x] Implement a lightweight TarFS parser in the kernel to iterate over 512-byte blocks.
+- [x] Abstract file operations into a basic `read_file(name: &str) -> Option<&[u8]>` function.
+- [x] **Milestone:** The kernel can successfully print the contents of a text file (e.g., `motd.txt`) bundled inside the RAMDisk to the framebuffer.
 
 ## 3. ELF Process Loading
-- [ ] Implement an ELF parser to validate headers and read Program Headers.
-- [ ] Create a `spawn_process` function that sets up a new Page Table for an ELF binary, mapping its segments into an isolated address space.
-- [ ] **Milestone:** Successfully load and execute a compiled "User-land" `hello_world.elf` binary from the RAMDisk.
+- [x] Implement an ELF parser to validate headers and read Program Headers.
+- [x] Create a `spawn_process` function that sets up a new Page Table for an ELF binary, mapping its segments into an isolated address space.
+- [x] **Milestone:** Successfully load and execute a compiled "User-land" `hello_world.elf` binary from the RAMDisk.
 
 ## 4. Minimal Shell (ROSS-SH)
-- [ ] Implement a basic line-buffer to capture PS/2 keyboard input.
-- [ ] Create a command parser mapping strings to kernel functions (e.g., `help`, `version`, `clear`, `reboot`).
-- [ ] **Milestone:** The user can type `reboot` and press Enter to restart the QEMU environment.
+- [x] Implement a basic line-buffer to capture PS/2 keyboard input.
+- [x] Create a command parser mapping strings to kernel functions (e.g., `help`, `version`, `clear`, `reboot`).
+- [x] **Milestone:** The user can type `reboot` and press Enter to restart the QEMU environment.

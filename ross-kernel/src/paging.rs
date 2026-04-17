@@ -33,9 +33,14 @@ static mut PD:   [PageTable; 4]        = [
     PageTable::new(), PageTable::new(),
 ];
 
-const KERNEL_VMA_BASE: u64 = 0xFFFFFFFF_80000000;
+pub const KERNEL_VMA_BASE: u64 = 0xFFFFFFFF_80000000;
+
+pub fn phys_to_virt(phys: usize) -> u64 {
+    phys as u64 + KERNEL_VMA_BASE
+}
 
 pub unsafe fn init() {
+    // ... rest of init stays the same
     unsafe {
         crate::serial::serial_print("paging: setting up tables\n");
         let pdpt_low_phys = (core::ptr::addr_of!(PDPT_LOW) as u64) - KERNEL_VMA_BASE;
@@ -50,31 +55,75 @@ pub unsafe fn init() {
             let pd_phys = (core::ptr::addr_of!(PD[i]) as u64) - KERNEL_VMA_BASE;
             PDPT_LOW.entries[i] = pd_phys | PRESENT | WRITABLE | USER;
             
-            // Map physical 0..4GB to virtual -4GB..0
-            // i=0 (P:0-1G)   -> Index 510 (-2G to -1G) -- WAIT, no.
-            // Let's do it cleanly:
-            // Virtual -2GB..-1GB (Index 510) -> Physical 0..1GB (PD[0])
-            // Virtual -1GB.. 0GB (Index 511) -> Physical 1..2GB (PD[1])
             if i == 0 { PDPT_HIGH.entries[510] = pd_phys | PRESENT | WRITABLE | USER; }
             if i == 1 { PDPT_HIGH.entries[511] = pd_phys | PRESENT | WRITABLE | USER; }
-            // Optional: Map more for FB etc.
-            if i == 2 { PDPT_HIGH.entries[508] = pd_phys | PRESENT | WRITABLE | USER; } // -4G to -3G
-            if i == 3 { PDPT_HIGH.entries[509] = pd_phys | PRESENT | WRITABLE | USER; } // -3G to -2G
+            if i == 2 { PDPT_HIGH.entries[508] = pd_phys | PRESENT | WRITABLE | USER; } 
+            if i == 3 { PDPT_HIGH.entries[509] = pd_phys | PRESENT | WRITABLE | USER; } 
         }
 
-        // PD entries: 512 × 2 MB = 1 GB per PD, 4 PDs = first 4 GB
         for pd_idx in 0..4usize {
-            let base_phys = pd_idx as u64 * 0x4000_0000; // 1 GB per PD
+            let base_phys = pd_idx as u64 * 0x4000_0000; 
             for entry in 0..512usize {
-                let phys = base_phys + entry as u64 * 0x0020_0000; // 2 MB steps
+                let phys = base_phys + entry as u64 * 0x0020_0000; 
                 PD[pd_idx].entries[entry] = phys | PRESENT | WRITABLE | HUGE_PAGE | USER;
             }
         }
 
-        crate::serial::serial_print("paging: moving to cr3\n");
-        // Flush TLB by reloading CR3 with our new PML4
         let pml4_phys = (core::ptr::addr_of!(PML4) as u64) - KERNEL_VMA_BASE;
         core::arch::asm!("mov cr3, {0}", in(reg) pml4_phys, options(nostack));
-        crate::serial::serial_print("Paging: CR3 switch survived in kernel\n");
     }
+}
+
+pub fn create_user_address_space() -> u64 {
+    let pml4_phys = crate::pmm::alloc_page().expect("OOM: PML4");
+    let pml4 = unsafe { &mut *(phys_to_virt(pml4_phys) as *mut PageTable) };
+    pml4.entries.fill(0);
+
+    // Copy kernel mappings (index 511)
+    unsafe {
+        pml4.entries[511] = PML4.entries[511];
+    }
+
+    pml4_phys as u64
+}
+
+pub fn map_user_page(pml4_phys: u64, vaddr: u64, paddr: u64, flags: u64) {
+    let pml4 = unsafe { &mut *(phys_to_virt(pml4_phys as usize) as *mut PageTable) };
+    
+    let pml4_idx = (vaddr >> 39) & 0x1FF;
+    let pdpt_idx = (vaddr >> 30) & 0x1FF;
+    let pd_idx   = (vaddr >> 21) & 0x1FF;
+    let pt_idx   = (vaddr >> 12) & 0x1FF;
+
+    // Get or create PDPT
+    if pml4.entries[pml4_idx as usize] == 0 {
+        let phys = crate::pmm::alloc_page().expect("OOM: PDPT");
+        let ptr = phys_to_virt(phys) as *mut PageTable;
+        unsafe { (*ptr).entries.fill(0); }
+        pml4.entries[pml4_idx as usize] = phys as u64 | PRESENT | WRITABLE | USER;
+    }
+    let pdpt_phys = pml4.entries[pml4_idx as usize] & !0xFFF;
+    let pdpt = unsafe { &mut *(phys_to_virt(pdpt_phys as usize) as *mut PageTable) };
+
+    // Get or create PD
+    if pdpt.entries[pdpt_idx as usize] == 0 {
+        let phys = crate::pmm::alloc_page().expect("OOM: PD");
+        let ptr = phys_to_virt(phys) as *mut PageTable;
+        unsafe { (*ptr).entries.fill(0); }
+        pdpt.entries[pdpt_idx as usize] = phys as u64 | PRESENT | WRITABLE | USER;
+    }
+    let pd_phys = pdpt.entries[pdpt_idx as usize] & !0xFFF;
+    let pd = unsafe { &mut *(phys_to_virt(pd_phys as usize) as *mut PageTable) };
+
+    // Get or create PT
+    if pd.entries[pd_idx as usize] == 0 {
+        let phys = crate::pmm::alloc_page().expect("OOM: PT");
+        let ptr = phys_to_virt(phys) as *mut PageTable;
+        unsafe { (*ptr).entries.fill(0); }
+        pd.entries[pd_idx as usize] = phys as u64 | PRESENT | WRITABLE | USER;
+    }
+    let pt_phys = pd.entries[pd_idx as usize] & !0xFFF;
+    let pt = unsafe { &mut *(phys_to_virt(pt_phys as usize) as *mut PageTable) };
+
+    pt.entries[pt_idx as usize] = paddr | flags | PRESENT | USER;
 }

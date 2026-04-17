@@ -1,10 +1,21 @@
 use alloc::vec::Vec;
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use crate::elf;
+use crate::vfs;
+use crate::pmm;
+use crate::paging;
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskId(usize);
+
+#[repr(C)]
+pub struct TaskSwitchResult {
+    pub rsp: u64,
+    pub cr3: u64,
+}
 
 #[repr(C)]
 pub struct FullContext {
@@ -26,6 +37,7 @@ pub struct Task {
     pub id: TaskId,
     pub stack: Vec<u8>,
     pub rsp: u64,
+    pub cr3: u64,
     pub state: TaskState,
 }
 
@@ -37,7 +49,8 @@ pub enum TaskState {
 }
 
 impl Task {
-    pub fn new(entry_point: usize, stack_size: usize) -> Self {
+    pub fn new(entry_point: usize, stack_top: u64, cr3: u64, is_user: bool) -> Self {
+        let stack_size = 0x2000; // Small kernel stack for context storage
         let mut stack = Vec::with_capacity(stack_size);
         stack.extend(core::iter::repeat(0).take(stack_size));
         
@@ -51,14 +64,17 @@ impl Task {
         // [rip] entry_point
         // [rax..r15] 0
         
-        let stack_top = stack.as_ptr() as usize + stack_size;
-        let mut rsp = stack_top as *mut u64;
+        let internal_stack_top = stack.as_ptr() as usize + stack_size;
+        let mut rsp = internal_stack_top as *mut u64;
+
+        let cs = if is_user { 0x23 } else { 0x08 };
+        let ss = if is_user { 0x1B } else { 0x10 };
 
         unsafe {
-            rsp = rsp.offset(-1); rsp.write(0x10); // SS
-            rsp = rsp.offset(-1); rsp.write(stack_top as u64); // RSP
+            rsp = rsp.offset(-1); rsp.write(ss); // SS
+            rsp = rsp.offset(-1); rsp.write(if stack_top == 0 { internal_stack_top as u64 } else { stack_top }); // RSP
             rsp = rsp.offset(-1); rsp.write(0x202); // RFLAGS
-            rsp = rsp.offset(-1); rsp.write(0x08); // CS
+            rsp = rsp.offset(-1); rsp.write(cs); // CS
             rsp = rsp.offset(-1); rsp.write(entry_point as u64); // RIP
             
             // 15 registers
@@ -72,16 +88,21 @@ impl Task {
             id,
             stack,
             rsp: rsp as u64,
+            cr3,
             state: TaskState::Ready,
         }
     }
 
     /// Create a dummy task for the already-running main kernel execution.
     pub fn main_task() -> Self {
+        let cr3: u64;
+        unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3); }
+
         Task {
             id: TaskId(NEXT_ID.fetch_add(1, Ordering::SeqCst)),
             stack: Vec::new(), // Not used for main task
             rsp: 0,            // Will be set on first switch
+            cr3,
             state: TaskState::Running,
         }
     }
@@ -116,25 +137,87 @@ impl Scheduler {
         self.tasks.push_back(task);
     }
 
-    pub fn pick_next(&mut self, current_rsp: u64) -> u64 {
+    pub fn pick_next(&mut self, current_rsp: u64) -> TaskSwitchResult {
         if let Some(mut current) = self.current_task.take() {
             current.rsp = current_rsp;
             current.state = TaskState::Ready;
-            if current.stack.len() > 0 { // Don't re-queue main if it's special? No, we can re-queue it.
-                self.tasks.push_back(current);
-            } else {
-                // Special handling for the very first main task if it has no stack vec
-                self.tasks.push_back(current);
-            }
+            self.tasks.push_back(current);
         }
 
         if let Some(mut next) = self.tasks.pop_front() {
             next.state = TaskState::Running;
             let next_rsp = next.rsp;
+            let next_cr3 = next.cr3;
             self.current_task = Some(next);
-            next_rsp
+            TaskSwitchResult { rsp: next_rsp, cr3: next_cr3 }
         } else {
-            current_rsp // No other tasks, continue current
+            // Should not happen if main task is always there
+            let cr3: u64;
+            unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3); }
+            TaskSwitchResult { rsp: current_rsp, cr3 }
         }
     }
+}
+
+pub fn spawn_process(path: &str) -> Result<(), ()> {
+    let file = vfs::open(path)?;
+    let stat = file.attribute();
+    let mut data = alloc::vec![0u8; stat.size];
+    file.read(0, &mut data)?;
+
+    let header_ptr = data.as_ptr() as *const elf::ElfHeader;
+    let header = unsafe { &*header_ptr };
+    if !header.is_valid() {
+        return Err(());
+    }
+
+    let cr3 = paging::create_user_address_space();
+    
+    // Map PT_LOAD segments
+    for ph in header.program_headers(&data) {
+        if ph.p_type == elf::PT_LOAD {
+            let start_vaddr = ph.p_vaddr;
+            let mem_size = ph.p_memsz as usize;
+            let file_size = ph.p_filesz as usize;
+            
+            let mut offset = 0;
+            while offset < mem_size {
+                let vaddr = start_vaddr + offset as u64;
+                let phys = pmm::alloc_page().ok_or(())?;
+                
+                // Map it RW + USER
+                paging::map_user_page(cr3, vaddr, phys as u64, 0x2 | 0x4);
+                
+                // Copy data
+                let page_ptr = paging::phys_to_virt(phys) as *mut u8;
+                if offset < file_size {
+                    let to_copy = core::cmp::min(file_size - offset, 4096);
+                    unsafe {
+                        let src = data.as_ptr().add(ph.p_offset as usize + offset);
+                        core::ptr::copy_nonoverlapping(src, page_ptr, to_copy);
+                        if to_copy < 4096 {
+                            core::ptr::write_bytes(page_ptr.add(to_copy), 0, 4096 - to_copy);
+                        }
+                    }
+                } else {
+                    unsafe { core::ptr::write_bytes(page_ptr, 0, 4096); }
+                }
+                offset += 4096;
+            }
+        }
+    }
+
+    // Allocate and map user stack at 0x0000_7000_0000_0000
+    let stack_vaddr = 0x0000_7000_0000_0000u64;
+    let stack_pages = 8; // 32 KB
+    for i in 0..stack_pages {
+        let phys = pmm::alloc_page().ok_or(())?;
+        paging::map_user_page(cr3, stack_vaddr + i * 4096, phys as u64, 0x2 | 0x4);
+    }
+    let stack_top = stack_vaddr + stack_pages * 4096;
+
+    let task = Task::new(header.e_entry as usize, stack_top, cr3, true);
+    SCHEDULER.lock().add_task(task);
+
+    Ok(())
 }

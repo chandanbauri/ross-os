@@ -105,6 +105,11 @@ core::arch::global_asm!(
     "mov rdi, rsp",
     "call task_timer_handler",
     "mov rsp, rax",
+    "mov rcx, cr3",
+    "cmp rcx, rdx",
+    "je .no_cr3_switch",
+    "mov cr3, rdx",
+    ".no_cr3_switch:",
     "pop r15", "pop r14", "pop r13", "pop r12", "pop rbp", "pop rbx",
     "pop r11", "pop r10", "pop r9",  "pop r8",
     "pop rsi", "pop rdi", "pop rdx", "pop rcx", "pop rax",
@@ -116,11 +121,11 @@ unsafe extern "C" {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn task_timer_handler(rsp: u64) -> u64 {
+extern "C" fn task_timer_handler(rsp: u64) -> crate::task::TaskSwitchResult {
     pit::tick();
-    let next_rsp = crate::task::SCHEDULER.lock().pick_next(rsp);
+    let res = crate::task::SCHEDULER.lock().pick_next(rsp);
     unsafe { pic::send_eoi(0); }
-    next_rsp
+    res
 }
 
 /// PIT timer handler (IRQ0 → vector 32).

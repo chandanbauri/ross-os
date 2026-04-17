@@ -95,6 +95,9 @@ fn main() -> Status {
         let kernel_ptr = handoff::load_kernel_file();
         uefi::println!("Kernel loaded. Entry point: {:?}", kernel_ptr);
 
+        let (rd_ptr, rd_size) = handoff::load_ramdisk_file();
+        uefi::println!("RAMDisk loaded: {:?} ({} bytes)", rd_ptr, rd_size);
+
         draw_string(ptr, width, 50, 100, "Jumping to Kernel...");
 
         let info = ross_common::BootInfo {
@@ -104,6 +107,8 @@ fn main() -> Status {
             screen_height:    height,
             memory_map:       core::ptr::addr_of!(MEM_REGIONS) as *const _,
             memory_map_len:   MEM_REGION_COUNT,
+            ramdisk_addr:     rd_ptr,
+            ramdisk_size:     rd_size,
         };
 
         handoff::map_higher_half();

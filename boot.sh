@@ -13,6 +13,13 @@ cp target/x86_64-unknown-uefi/debug/rb-loader.efi build/EFI/BOOT/BOOTX64.EFI
 # Convert Kernel to flat binary (strips ELF headers)
 rust-objcopy -O binary target/x86_64-unknown-none/debug/ross-kernel build/kernel.elf
 
+# Create RAMDisk (Initrd)
+mkdir -p build/initrd
+cp assets/hello.txt build/initrd/
+echo "Welcome to ROSS OS!" > build/initrd/motd.txt
+tar -cf build/initrd.tar -C build/initrd .
+rm -rf build/initrd
+
 # Run
 qemu-system-x86_64 \
     -drive if=pflash,format=raw,readonly=on,file="$UEFI_FIRMWARE" \
