@@ -107,6 +107,11 @@ fn prompt(wr: &mut writer::Writer) {
 // ── Command dispatch ──────────────────────────────────────────────────────────
 
 fn execute(input: &str, wr: &mut writer::Writer) {
+    // Definitive trace for debugging reboots
+    crate::serial::serial_print("[SHELL] Executing: ");
+    crate::serial::serial_print(input);
+    crate::serial::serial_print("\n");
+
     let mut parts = input.split_whitespace();
     match parts.next().unwrap_or("") {
         "help"    => cmd_help(wr),

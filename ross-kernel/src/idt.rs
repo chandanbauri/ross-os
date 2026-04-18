@@ -97,23 +97,45 @@ pub fn init_idt(idt: &mut Idt) {
     idt.entries[33].set_handler(keyboard::handler as *const u8);
 }
 
+#[unsafe(no_mangle)]
+extern "C" fn task_timer_handler(rsp: u64) -> u128 {
+    // Definitive trace: if you see this, interrupts are working
+    // crate::serial::serial_print("!"); 
+    
+    pit::tick();
+    let res = crate::task::SCHEDULER.lock().pick_next(rsp);
+    unsafe { pic::send_eoi(0); }
+    
+    // Combine RSP and CR3 into a single u128 for register return (RAX/RDX)
+    (res.cr3 as u128) << 64 | (res.rsp as u128)
+}
+
 core::arch::global_asm!(
     ".global timer_handler_stub",
     "timer_handler_stub:",
-    "push rax", "push rcx", "push rdx", "push rdi", "push rsi",
+    // Save registers
+    "push rax", "push rcx", "push rdx", "push rbx",
+    "push rbp", "push rsi", "push rdi",
     "push r8",  "push r9",  "push r10", "push r11",
-    "push rbx", "push rbp", "push r12", "push r13", "push r14", "push r15",
+    "push r12", "push r13", "push r14", "push r15",
+
+    // Call scheduler
     "mov rdi, rsp",
     "call task_timer_handler",
+
+    // RAX = new RSP, RDX = new CR3
     "mov rsp, rax",
     "mov rcx, cr3",
     "cmp rcx, rdx",
-    "je .no_cr3_switch",
+    "je 1f",
     "mov cr3, rdx",
-    ".no_cr3_switch:",
-    "pop r15", "pop r14", "pop r13", "pop r12", "pop rbp", "pop rbx",
+    "1:",
+
+    // Restore registers
+    "pop r15", "pop r14", "pop r13", "pop r12",
     "pop r11", "pop r10", "pop r9",  "pop r8",
-    "pop rsi", "pop rdi", "pop rdx", "pop rcx", "pop rax",
+    "pop rdi", "pop rsi", "pop rbp", "pop rbx",
+    "pop rdx", "pop rcx", "pop rax",
     "iretq"
 );
 

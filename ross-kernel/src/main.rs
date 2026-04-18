@@ -109,9 +109,10 @@ extern "C" fn kernel_main(info: &'static BootInfo) -> ! {
 
         sched.set_main(task::Task::main_task());
         
-        // Kernel tasks: use internal stack allocation
-        // sched.add_task(task::Task::new(task_a as *const () as usize, 0, cr3, false));
-        // sched.add_task(task::Task::new(task_b as *const () as usize, 0, cr3, false));
+        // Add a simple heartbeat to confirm scheduler is alive
+        let cr3: u64;
+        unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3); }
+        sched.add_task(task::Task::new(stable_heartbeat as usize, 0, cr3, false));
     }
 
     // ── 7. System Calls ─────────────────────────────────────────────────────
@@ -274,5 +275,12 @@ extern "C" fn task_b() -> ! {
     loop {
         crate::serial::serial_print("B");
         for _ in 0..1_000_000 { unsafe { core::arch::asm!("nop"); } }
+    }
+}
+
+extern "C" fn stable_heartbeat() -> ! {
+    loop {
+        crate::serial::serial_print(".");
+        for _ in 0..10_000_000 { unsafe { core::arch::asm!("nop"); } }
     }
 }
