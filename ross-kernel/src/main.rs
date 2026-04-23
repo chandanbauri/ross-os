@@ -63,7 +63,7 @@ extern "C" fn kernel_main(info: &'static BootInfo) -> ! {
     serial::serial_print("Entered kernel_main\n");
     // ── 1. CPU Fundamentals ─────────────────────────────────────────────────
     unsafe {
-        GDT.load();
+        (*core::ptr::addr_of_mut!(GDT)).load();
         serial::serial_print("GDT loaded\n");
 
         // Zero BSS section while on our own writable stack
@@ -182,6 +182,20 @@ extern "C" fn kernel_main(info: &'static BootInfo) -> ! {
     let msg_y     = sub_y + 12;
     wr.set_pos(title_x, msg_y);
     wr.put_str(msg, writer::FG, msg_scale);
+
+    // Display MOTD from ramdisk on the framebuffer
+    if let Ok(file) = vfs::open("motd.txt") {
+        let mut buf = [0u8; 128];
+        if let Ok(n) = file.read(0, &mut buf) {
+            let motd = core::str::from_utf8(&buf[..n])
+                .unwrap_or("")
+                .trim_matches('\n')
+                .trim_matches('\0')
+                .trim();
+            wr.set_pos(title_x, msg_y + 16);
+            wr.put_str(motd, writer::ACCENT, 1);
+        }
+    }
 
     // ── 7. Kernel Log ────────────────────────────────────────────────────────
     wr.set_pos(50, h.saturating_sub(90));

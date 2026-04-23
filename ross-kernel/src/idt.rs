@@ -143,14 +143,6 @@ unsafe extern "C" {
     fn timer_handler_stub();
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn task_timer_handler(rsp: u64) -> crate::task::TaskSwitchResult {
-    pit::tick();
-    let res = crate::task::SCHEDULER.lock().pick_next(rsp);
-    unsafe { pic::send_eoi(0); }
-    res
-}
-
 /// PIT timer handler (IRQ0 → vector 32).
 // Replaced by timer_handler_stub
 /*

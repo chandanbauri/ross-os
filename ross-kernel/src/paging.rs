@@ -119,7 +119,7 @@ pub fn create_user_address_space_old() -> u64 {
 
 pub fn create_user_address_space() -> u64 {
     let pml4_phys = crate::pmm::alloc_page().expect("OOM: PML4");
-    let pml4 = unsafe { &mut *(paging::phys_to_virt(pml4_phys) as *mut PageTable) };
+    let pml4 = unsafe { &mut *(phys_to_virt(pml4_phys) as *mut PageTable) };
     pml4.entries.fill(0);
 
     // Keep the Higher-Half alias if you have one
@@ -128,14 +128,14 @@ pub fn create_user_address_space() -> u64 {
     }
 
     let pdpt_phys = crate::pmm::alloc_page().expect("OOM: PDPT");
-    let pdpt = unsafe { &mut *(paging::phys_to_virt(pdpt_phys) as *mut PageTable) };
+    let pdpt = unsafe { &mut *(phys_to_virt(pdpt_phys) as *mut PageTable) };
     pdpt.entries.fill(0);
 
     // Map the first 4 Gigabytes of memory (4 PDPT entries * 1GB each)
     // This ensures the Framebuffer and UEFI MMIO are definitely mapped.
     for pdpt_idx in 0..4 {
         let pd_phys = crate::pmm::alloc_page().expect("OOM: PD");
-        let pd = unsafe { &mut *(paging::phys_to_virt(pd_phys) as *mut PageTable) };
+        let pd = unsafe { &mut *(phys_to_virt(pd_phys) as *mut PageTable) };
         pd.entries.fill(0);
 
         for pd_idx in 0..512 {
@@ -157,6 +157,31 @@ pub fn create_user_address_space() -> u64 {
     pml4.entries[0] = pdpt_phys as u64 | 0x4 | 0x2 | 0x1;
 
     pml4_phys as u64
+}
+
+/// Returns the physical address backing `vaddr` in the given address space,
+/// or `None` if the address is not mapped at the 4 KB level.
+pub fn lookup_page(pml4_phys: u64, vaddr: u64) -> Option<usize> {
+    let pml4_idx = (vaddr >> 39) & 0x1FF;
+    let pdpt_idx = (vaddr >> 30) & 0x1FF;
+    let pd_idx   = (vaddr >> 21) & 0x1FF;
+    let pt_idx   = (vaddr >> 12) & 0x1FF;
+
+    let pml4 = unsafe { &*(phys_to_virt(pml4_phys as usize) as *const PageTable) };
+    if pml4.entries[pml4_idx as usize] == 0 { return None; }
+
+    let pdpt = unsafe { &*(phys_to_virt((pml4.entries[pml4_idx as usize] & !0xFFF) as usize) as *const PageTable) };
+    if pdpt.entries[pdpt_idx as usize] == 0 { return None; }
+
+    let pd = unsafe { &*(phys_to_virt((pdpt.entries[pdpt_idx as usize] & !0xFFF) as usize) as *const PageTable) };
+    let pd_entry = pd.entries[pd_idx as usize];
+    if pd_entry == 0 || pd_entry & HUGE_PAGE != 0 { return None; }
+
+    let pt = unsafe { &*(phys_to_virt((pd_entry & !0xFFF) as usize) as *const PageTable) };
+    let pt_entry = pt.entries[pt_idx as usize];
+    if pt_entry == 0 { return None; }
+
+    Some((pt_entry & !0xFFF) as usize)
 }
 
 pub fn map_user_page(pml4_phys: u64, vaddr: u64, paddr: u64, flags: u64) {

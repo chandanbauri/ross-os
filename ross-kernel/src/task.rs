@@ -232,16 +232,24 @@ pub fn spawn_process(path: &str) -> Result<(), ()> {
 
             let mut current_page = page_start;
             while current_page < page_end {
-                let phys = pmm::alloc_page().ok_or(())?;
+                // If a previous PT_LOAD segment already mapped this page, reuse
+                // its physical frame instead of allocating a new one and zeroing
+                // it (which would destroy the already-copied code/data).
+                let (phys, already_mapped) = match paging::lookup_page(cr3, current_page) {
+                    Some(p) => (p, true),
+                    None    => (pmm::alloc_page().ok_or(())?, false),
+                };
 
-                // Map it: RW + USER (Permissions should ideally match ph.p_flags)
-                // 0x1 (Present) | 0x2 (R/W) | 0x4 (User)
-                paging::map_user_page(cr3, stack_vaddr + i * 4096, phys as u64, 0x1 | 0x2 | 0x4);
-
-                // Zero the page first
                 let page_ptr = paging::phys_to_virt(phys) as *mut u8;
-                unsafe {
-                    core::ptr::write_bytes(page_ptr, 0, 4096);
+
+                if !already_mapped {
+                    // Translate ELF p_flags → page flags.
+                    // ELF: PF_X=0x1, PF_W=0x2, PF_R=0x4
+                    // x86: Present=0x1, Writable=0x2, User=0x4
+                    // Always set Present+User; set Writable only when ELF W bit is set.
+                    let page_flags = 0x1 | 0x4 | if ph.p_flags & 0x2 != 0 { 0x2 } else { 0 };
+                    paging::map_user_page(cr3, current_page, phys as u64, page_flags);
+                    unsafe { core::ptr::write_bytes(page_ptr, 0, 4096); }
                 }
 
                 // Copy data from file if within range
@@ -303,25 +311,43 @@ pub fn spawn_process(path: &str) -> Result<(), ()> {
     let _ = writeln!(serial, "[EXEC] Entry Point: 0x{:x}", header.e_entry);
     let _ = writeln!(serial, "[EXEC] Bypassing Scheduler. Forcing Direct Jump...");
 
+    // USER_CODE_SELECTOR (GDT index 4) | RPL 3 = 0x23
+    // USER_DATA_SELECTOR (GDT index 3) | RPL 3 = 0x1B
+    let user_cs = crate::gdt::USER_CODE_SELECTOR as u64 | 3;
+    let user_ds = crate::gdt::USER_DATA_SELECTOR as u64 | 3;
+
     unsafe {
-        // Disable interrupts so timer ticks don't crash us during the test
-        core::arch::asm!("cli");
-
         core::arch::asm!(
-            "mov cr3, {0}",
-            "mov rsp, {1}",
-            "push 0",      // Dummy return address
-            "jmp {2}",     // Jump to the ELF entry point
-            in(reg) cr3,
-            in(reg) stack_top,
-            in(reg) header.e_entry as usize,
+            // Disable interrupts for the switch; iretq will re-enable via RFLAGS
+            "cli",
+            // Switch to the user address space
+            "mov cr3, {cr3}",
+            // Load user data selector into all data segment registers
+            "mov ax, {uds:x}",
+            "mov ds, ax",
+            "mov es, ax",
+            "mov fs, ax",
+            "mov gs, ax",
+            // Build 64-bit iretq frame on the kernel stack (high → low address):
+            //   [+32] SS       (user stack segment)
+            //   [+24] RSP      (user stack pointer)
+            //   [+16] RFLAGS   (IF=1 so interrupts are enabled in user space)
+            //   [+ 8] CS       (user code segment, CPL=3)
+            //   [+ 0] RIP      (entry point)
+            "push {ss}",
+            "push {ursp}",
+            "push {rflags}",
+            "push {cs}",
+            "push {entry}",
+            "iretq",
+            cr3    = in(reg) cr3,
+            entry  = in(reg) header.e_entry as usize,
+            ursp   = in(reg) stack_top,
+            cs     = in(reg) user_cs,
+            ss     = in(reg) user_ds,
+            uds    = in(reg) user_ds,
+            rflags = in(reg) 0x202u64,  // IF=1 (bit 9) + reserved bit 1
+            options(noreturn),
         );
-    }
-
-    // Should never reach here unless ELF returns
-    loop {
-        unsafe {
-            core::arch::asm!("hlt");
-        }
     }
 }

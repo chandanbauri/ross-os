@@ -5,7 +5,8 @@ export PATH="/opt/homebrew/bin:$PATH"
 # Build everything
 cargo build -p rb-loader --target x86_64-unknown-uefi
 cargo build -p ross-kernel --target x86_64-unknown-none
-cargo build -p ross-init --target x86_64-unknown-none
+RUSTFLAGS="-C relocation-model=static -C link-arg=-Tross-user/linker.ld" \
+    cargo build -p ross-init --target x86_64-unknown-none
 
 # Prep disk
 mkdir -p build/EFI/BOOT
