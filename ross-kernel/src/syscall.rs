@@ -70,7 +70,7 @@ pub fn do_syscall(id: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-extern "C" fn syscall_dispatch(id: u64, arg1: u64, arg2: u64, _arg3: u64) -> u64 {
+extern "C" fn syscall_dispatch(id: u64, arg1: u64, arg2: u64, arg3: u64) -> u64 {
     match id {
         1 => {
             // Log message
@@ -85,6 +85,26 @@ extern "C" fn syscall_dispatch(id: u64, arg1: u64, arg2: u64, _arg3: u64) -> u64
         2 => {
             // Uptime
             crate::pit::ticks()
+        }
+        3 => {
+            // sys_pipe — create a new pipe, return its ID (or !0 on failure).
+            crate::ipc::create().map(|id| id as u64).unwrap_or(u64::MAX)
+        }
+        4 => {
+            // sys_write(pipe_id, buf, len)
+            let id  = arg1 as usize;
+            let ptr = arg2 as *const u8;
+            let len = arg3 as usize;
+            let data = unsafe { core::slice::from_raw_parts(ptr, len) };
+            crate::ipc::write(id, data).map(|n| n as u64).unwrap_or(u64::MAX)
+        }
+        5 => {
+            // sys_read(pipe_id, buf, len)
+            let id  = arg1 as usize;
+            let ptr = arg2 as *mut u8;
+            let len = arg3 as usize;
+            let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
+            crate::ipc::read(id, buf).map(|n| n as u64).unwrap_or(u64::MAX)
         }
         _ => 0xFFFFFFFFFFFFFFFF, // Error
     }

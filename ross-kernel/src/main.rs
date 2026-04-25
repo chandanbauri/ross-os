@@ -8,8 +8,12 @@ extern crate alloc;
 mod gdt;
 mod heap;
 mod idt;
+mod ipc;
 mod kbuf;
 mod keyboard;
+mod ahci;
+mod fat32;
+mod pci;
 mod pic;
 mod pit;
 mod pmm;
@@ -95,6 +99,19 @@ extern "C" fn kernel_main(info: &'static BootInfo) -> ! {
     // ── 4. Kernel Heap ──────────────────────────────────────────────────────
     heap::init();
 
+    // ── 4b. PCI Bus Enumeration ─────────────────────────────────────────────
+    pci::enumerate();
+
+    // ── 4c. AHCI Storage (best-effort; ignore absence of a SATA drive) ──────
+    match ahci::init() {
+        Ok(())   => serial::serial_print("[AHCI] Ready\n"),
+        Err(msg) => {
+            serial::serial_print("[AHCI] Disabled: ");
+            serial::serial_print(msg);
+            serial::serial_print("\n");
+        }
+    }
+
     // ── 5. Shell state reset ────────────────────────────────────────────────
     unsafe {
         let state_ptr = core::ptr::addr_of_mut!(SHELL_STATE);
@@ -141,6 +158,21 @@ extern "C" fn kernel_main(info: &'static BootInfo) -> ! {
             }
         } else {
             serial::serial_print("VFS: No Initrd passed from bootloader\n");
+        }
+
+        // Mount the persistent FAT32 disk at /mnt/disk, if AHCI is ready.
+        if ahci::is_ready() {
+            match fat32::Fat32Fs::mount() {
+                Ok(fs) => {
+                    vfs::mount_disk(fs.root());
+                    serial::serial_print("VFS: Mounted FAT32 at /mnt/disk\n");
+                }
+                Err(msg) => {
+                    serial::serial_print("VFS: FAT32 mount failed: ");
+                    serial::serial_print(msg);
+                    serial::serial_print("\n");
+                }
+            }
         }
     }
 

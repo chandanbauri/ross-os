@@ -6,6 +6,9 @@
 ///   • Command dispatch: help, clear, memory, uptime, version
 ///   • Coloured output via writer colour constants
 
+extern crate alloc;
+use alloc::string::String;
+use alloc::vec::Vec;
 use crate::{pit, pmm, writer};
 
 const MAX_LINE: usize = 128;
@@ -119,7 +122,21 @@ fn execute(input: &str, wr: &mut writer::Writer) {
         "memory"  => cmd_memory(wr),
         "uptime"  => cmd_uptime(wr),
         "version" => cmd_version(wr),
-        "ls"      => cmd_ls(wr),
+        "ls"      => cmd_ls(parts.next().unwrap_or("/"), wr),
+        "lspci"   => cmd_lspci(wr),
+        "disk"    => cmd_disk(wr),
+        "cat"     => {
+            if let Some(path) = parts.next() { cmd_cat(path, wr); }
+            else { wr.put_str("  Usage: cat <path>\n", writer::DIM, SCALE); }
+        }
+        "write"   => {
+            let path = parts.next();
+            let data: String = parts.collect::<Vec<_>>().join(" ");
+            match (path, data.is_empty()) {
+                (Some(p), false) => cmd_write(p, data.as_bytes(), wr),
+                _ => wr.put_str("  Usage: write <path> <content>\n", writer::DIM, SCALE),
+            }
+        }
         "reboot"  => cmd_reboot(),
         "exec"    => {
             if let Some(path) = parts.next() {
@@ -139,16 +156,134 @@ fn execute(input: &str, wr: &mut writer::Writer) {
     }
 }
 
-fn cmd_ls(wr: &mut writer::Writer) {
-    if let Ok(files) = crate::vfs::VFS.lock().root_node.as_ref().map(|n| n.readdir()).unwrap_or(Err(())) {
-        wr.put_str("  Files in /:\n", writer::ACCENT, SCALE);
-        for file in files {
-            wr.put_str("    ", writer::FG, SCALE);
-            wr.put_str(&file, writer::FG, SCALE);
+fn cmd_ls(path: &str, wr: &mut writer::Writer) {
+    let target = if path.is_empty() { "/" } else { path };
+    let node = match crate::vfs::open(target) {
+        Ok(n) => n,
+        Err(_) => {
+            wr.put_str("  Error: no such path\n", writer::RED, SCALE);
+            return;
+        }
+    };
+    match node.readdir() {
+        Ok(files) => {
+            wr.put_str("  Files in ", writer::ACCENT, SCALE);
+            wr.put_str(target, writer::ACCENT, SCALE);
+            wr.put_str(":\n", writer::ACCENT, SCALE);
+            for file in files {
+                wr.put_str("    ", writer::FG, SCALE);
+                wr.put_str(&file, writer::FG, SCALE);
+                wr.put_char(b'\n', writer::FG, SCALE);
+            }
+        }
+        Err(_) => {
+            wr.put_str("  Error: not a directory\n", writer::RED, SCALE);
+        }
+    }
+}
+
+fn cmd_cat(path: &str, wr: &mut writer::Writer) {
+    let node = match crate::vfs::open(path) {
+        Ok(n) => n,
+        Err(_) => { wr.put_str("  Error: file not found\n", writer::RED, SCALE); return; }
+    };
+    let size = node.attribute().size;
+    if size == 0 { wr.put_str("  (empty)\n", writer::DIM, SCALE); return; }
+    let mut buf = alloc::vec![0u8; size.min(4096)];
+    match node.read(0, &mut buf) {
+        Ok(n) => {
+            for b in &buf[..n] {
+                if *b == b'\n' { wr.put_char(b'\n', writer::FG, SCALE); }
+                else if b.is_ascii_graphic() || *b == b' ' {
+                    wr.put_char(*b, writer::FG, SCALE);
+                }
+            }
             wr.put_char(b'\n', writer::FG, SCALE);
         }
-    } else {
-        wr.put_str("  Error: failed to list directory\n", writer::RED, SCALE);
+        Err(_) => wr.put_str("  Error: read failed\n", writer::RED, SCALE),
+    }
+}
+
+fn cmd_write(path: &str, data: &[u8], wr: &mut writer::Writer) {
+    crate::serial::serial_print("[WRITE] path=");
+    crate::serial::serial_print(path);
+    crate::serial::serial_print("\n");
+
+    let node = match crate::vfs::open(path) {
+        Ok(n) => {
+            crate::serial::serial_print("[WRITE] file exists, overwriting\n");
+            n
+        }
+        Err(_) => match crate::vfs::create(path) {
+            Ok(n) => {
+                crate::serial::serial_print("[WRITE] created new file\n");
+                n
+            }
+            Err(_) => {
+                crate::serial::serial_print("[WRITE] create failed\n");
+                wr.put_str("  Error: cannot create file\n", writer::RED, SCALE);
+                return;
+            }
+        }
+    };
+    match node.write(0, data) {
+        Ok(n) => {
+            use core::fmt::Write;
+            let _ = writeln!(wr, "  Wrote {} bytes to {}", n, path);
+        }
+        Err(_) => {
+            crate::serial::serial_print("[WRITE] write() failed\n");
+            wr.put_str("  Error: write failed (read-only?)\n", writer::RED, SCALE);
+        }
+    }
+}
+
+fn cmd_lspci(wr: &mut writer::Writer) {
+    use core::fmt::Write;
+    let devices = crate::pci::DEVICES.lock();
+    if devices.is_empty() {
+        wr.put_str("  No PCI devices enumerated\n", writer::DIM, SCALE);
+        return;
+    }
+    wr.put_str("  PCI Devices:\n", writer::ACCENT, SCALE);
+    for d in devices.iter() {
+        let _ = writeln!(
+            wr,
+            "    {:02x}:{:02x}.{}  {:04x}:{:04x}  {}",
+            d.bus, d.device, d.function,
+            d.vendor_id, d.device_id,
+            crate::pci::class_name(d.class, d.subclass),
+        );
+    }
+}
+
+fn cmd_disk(wr: &mut writer::Writer) {
+    use core::fmt::Write;
+    if !crate::ahci::is_ready() {
+        wr.put_str("  AHCI: no SATA drive attached\n", writer::RED, SCALE);
+        return;
+    }
+    let mut buf = [0u8; 512];
+    match crate::ahci::read_sectors(0, 1, &mut buf) {
+        Ok(()) => {
+            let sig = u16::from_le_bytes([buf[510], buf[511]]);
+            let _ = writeln!(
+                wr,
+                "  Sector 0 read OK  sig=0x{:04x} {}",
+                sig,
+                if sig == 0xAA55 { "(valid MBR)" } else { "(empty/not MBR)" }
+            );
+            wr.put_str("  First 16 bytes: ", writer::DIM, SCALE);
+            for b in &buf[..16] {
+                let _ = write!(wr, "{:02x} ", b);
+            }
+            wr.put_char(b'\n', writer::FG, SCALE);
+        }
+        Err(e) => {
+            wr.put_str("  AHCI error: ", writer::RED, SCALE);
+            wr.put_str(e, writer::RED, SCALE);
+            wr.put_char(b'\n', writer::FG, SCALE);
+        }
     }
 }
 
@@ -169,6 +304,10 @@ fn cmd_help(wr: &mut writer::Writer) {
         ("help",    "Show this help message"),
         ("clear",   "Clear the terminal area"),
         ("ls",      "List files in the RAMDisk"),
+        ("lspci",   "List enumerated PCI devices"),
+        ("disk",    "Read sector 0 and show MBR signature"),
+        ("cat",     "Print a file: cat <path>"),
+        ("write",   "Write to a file: write <path> <content>"),
         ("exec",    "Execute an ELF binary (exec <path>)"),
         ("memory",  "Show physical memory statistics"),
         ("uptime",  "Show system uptime"),

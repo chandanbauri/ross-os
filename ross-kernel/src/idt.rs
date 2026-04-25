@@ -135,7 +135,22 @@ core::arch::global_asm!(
     "pop r15", "pop r14", "pop r13", "pop r12",
     "pop r11", "pop r10", "pop r9",  "pop r8",
     "pop rdi", "pop rsi", "pop rbp", "pop rbx",
-    "pop rdx", "pop rcx", "pop rax",
+    "pop rdx", "pop rcx",
+    // Before restoring RAX, peek at the saved CS in the iretq frame.
+    // Layout after pop rcx: [rsp+0]=rax, [rsp+8]=RIP, [rsp+16]=CS.
+    // If CPL==3 we must set DS/ES/FS/GS to the user data selector (0x1B)
+    // because iretq does NOT restore data segments.
+    "mov eax, [rsp + 16]",
+    "and eax, 3",
+    "cmp eax, 3",
+    "jne 2f",
+    "mov ax, 0x1b",
+    "mov ds, ax",
+    "mov es, ax",
+    "mov fs, ax",
+    "mov gs, ax",
+    "2:",
+    "pop rax",
     "iretq"
 );
 

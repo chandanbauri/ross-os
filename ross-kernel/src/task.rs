@@ -305,49 +305,13 @@ pub fn spawn_process(path: &str) -> Result<(), ()> {
     }
     let stack_top = (stack_vaddr + stack_pages * 4096) & !0xF;
 
+    // Enqueue the user task.  The preemptive timer will schedule it.
+    let user_task = Task::new(header.e_entry as usize, stack_top, cr3, true);
+    SCHEDULER.lock().add_task(user_task);
+
     use core::fmt::Write;
     let mut serial = crate::serial::SerialPort;
-    let _ = writeln!(serial, "[EXEC] User Stack: 0x{:x}", stack_top);
-    let _ = writeln!(serial, "[EXEC] Entry Point: 0x{:x}", header.e_entry);
-    let _ = writeln!(serial, "[EXEC] Bypassing Scheduler. Forcing Direct Jump...");
-
-    // USER_CODE_SELECTOR (GDT index 4) | RPL 3 = 0x23
-    // USER_DATA_SELECTOR (GDT index 3) | RPL 3 = 0x1B
-    let user_cs = crate::gdt::USER_CODE_SELECTOR as u64 | 3;
-    let user_ds = crate::gdt::USER_DATA_SELECTOR as u64 | 3;
-
-    unsafe {
-        core::arch::asm!(
-            // Disable interrupts for the switch; iretq will re-enable via RFLAGS
-            "cli",
-            // Switch to the user address space
-            "mov cr3, {cr3}",
-            // Load user data selector into all data segment registers
-            "mov ax, {uds:x}",
-            "mov ds, ax",
-            "mov es, ax",
-            "mov fs, ax",
-            "mov gs, ax",
-            // Build 64-bit iretq frame on the kernel stack (high → low address):
-            //   [+32] SS       (user stack segment)
-            //   [+24] RSP      (user stack pointer)
-            //   [+16] RFLAGS   (IF=1 so interrupts are enabled in user space)
-            //   [+ 8] CS       (user code segment, CPL=3)
-            //   [+ 0] RIP      (entry point)
-            "push {ss}",
-            "push {ursp}",
-            "push {rflags}",
-            "push {cs}",
-            "push {entry}",
-            "iretq",
-            cr3    = in(reg) cr3,
-            entry  = in(reg) header.e_entry as usize,
-            ursp   = in(reg) stack_top,
-            cs     = in(reg) user_cs,
-            ss     = in(reg) user_ds,
-            uds    = in(reg) user_ds,
-            rflags = in(reg) 0x202u64,  // IF=1 (bit 9) + reserved bit 1
-            options(noreturn),
-        );
-    }
+    let _ = writeln!(serial, "[EXEC] User task queued — entry=0x{:x} stack=0x{:x}",
+                     header.e_entry, stack_top);
+    Ok(())
 }
