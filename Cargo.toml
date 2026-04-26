@@ -4,6 +4,7 @@ members = [
     "ross-kernel",
     "ross-common",
     "ross-user/init",
+    "ross-user/hello",
 ]
 # Optionally define a resolver (highly recommended: "2" or "3")
 resolver = "2"

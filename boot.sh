@@ -7,6 +7,8 @@ cargo build -p rb-loader --target x86_64-unknown-uefi
 cargo build -p ross-kernel --target x86_64-unknown-none
 RUSTFLAGS="-C relocation-model=static -C link-arg=-Tross-user/linker.ld" \
     cargo build -p ross-init --target x86_64-unknown-none
+RUSTFLAGS="-C relocation-model=static -C link-arg=-Tross-user/linker.ld" \
+    cargo build -p ross-hello --target x86_64-unknown-none
 
 # Prep disk
 mkdir -p build/EFI/BOOT
@@ -19,7 +21,7 @@ rust-objcopy -O binary target/x86_64-unknown-none/debug/ross-kernel build/kernel
 mkdir -p build/initrd
 cp assets/hello.txt build/initrd/
 echo "Welcome to ROSS OS Phase 6!" > build/initrd/motd.txt
-cp target/x86_64-unknown-none/debug/ross-init build/initrd/init.elf
+rust-objcopy --strip-all target/x86_64-unknown-none/debug/ross-init build/initrd/init.elf
 tar -cf build/initrd.tar -C build/initrd .
 rm -rf build/initrd
 
@@ -50,6 +52,26 @@ if [ "$DISK_NEEDS_FORMAT" = "1" ]; then
         newfs_msdos -F 32 -v ROSSDISK build/disk.img
     else
         echo "WARNING: No FAT32 formatter found — disk will be blank (mount will fail)"
+    fi
+fi
+
+# Copy user binaries onto the persistent FAT32 disk.
+# Uses hdiutil to mount on macOS; falls back to mcopy (mtools) on Linux.
+HELLO_BIN="target/x86_64-unknown-none/debug/ross-hello"
+HELLO_STRIPPED="/tmp/ross-hello-stripped"
+if [ -f "$HELLO_BIN" ]; then
+    rust-objcopy --strip-all "$HELLO_BIN" "$HELLO_STRIPPED"
+    if command -v hdiutil >/dev/null 2>&1; then
+        MNT=/tmp/rossdisk_mnt
+        mkdir -p "$MNT"
+        DDEV=$(hdiutil attach -imagekey diskimage-class=CRawDiskImage \
+               build/disk.img -mountpoint "$MNT" 2>/dev/null | head -1 | awk '{print $1}')
+        cp "$HELLO_STRIPPED" "$MNT/hello"
+        hdiutil detach "$MNT" 2>/dev/null || hdiutil detach "$DDEV" 2>/dev/null
+    elif command -v mcopy >/dev/null 2>&1; then
+        mcopy -i build/disk.img -o "$HELLO_STRIPPED" ::hello
+    else
+        echo "WARNING: cannot copy hello onto disk (no hdiutil or mcopy)"
     fi
 fi
 

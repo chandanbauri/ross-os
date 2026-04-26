@@ -1,6 +1,6 @@
 use linked_list_allocator::LockedHeap;
 
-const HEAP_SIZE: usize = 2 * 1024 * 1024; // 2 MB
+const HEAP_SIZE: usize = 8 * 1024 * 1024; // 8 MB
 
 /// Physical backing store for the kernel heap.
 /// Aligned to a page boundary so the allocator can sub-divide freely.

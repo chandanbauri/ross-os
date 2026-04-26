@@ -12,6 +12,7 @@ use alloc::vec::Vec;
 use crate::{pit, pmm, writer};
 
 const MAX_LINE: usize = 128;
+const MAX_CWD:  usize = 64;
 const SCALE:    usize = 1;
 
 /// Y-coordinate where the terminal area begins.
@@ -19,6 +20,28 @@ pub const TERM_Y: usize = 60;
 
 static mut LINE_BUF: [u8; MAX_LINE] = [0u8; MAX_LINE];
 static mut LINE_LEN: usize = 0;
+
+// Current working directory — default to the persistent FAT32 disk.
+static mut CWD_BUF: [u8; MAX_CWD] = {
+    let mut b = [0u8; MAX_CWD];
+    b[0] = b'/'; b[1] = b'm'; b[2] = b'n'; b[3] = b't';
+    b[4] = b'/'; b[5] = b'd'; b[6] = b'i'; b[7] = b's'; b[8] = b'k';
+    b
+};
+static mut CWD_LEN: usize = 9; // "/mnt/disk"
+
+/// Resolve a path: if it starts with '/' use as-is; otherwise prepend cwd.
+fn resolve(path: &str) -> String {
+    if path.starts_with('/') {
+        String::from(path)
+    } else {
+        let cwd = unsafe { core::str::from_utf8_unchecked(&CWD_BUF[..CWD_LEN]) };
+        let mut s = String::from(cwd);
+        if !s.ends_with('/') { s.push('/'); }
+        s.push_str(path);
+        s
+    }
+}
 
 // ── State machine ─────────────────────────────────────────────────────────────
 
@@ -122,25 +145,35 @@ fn execute(input: &str, wr: &mut writer::Writer) {
         "memory"  => cmd_memory(wr),
         "uptime"  => cmd_uptime(wr),
         "version" => cmd_version(wr),
-        "ls"      => cmd_ls(parts.next().unwrap_or("/"), wr),
+        "pwd"     => cmd_pwd(wr),
+        "cd"      => cmd_cd(parts.next().unwrap_or("/mnt/disk"), wr),
+        "ls"      => {
+            let raw = parts.next().unwrap_or("");
+            let path = if raw.is_empty() {
+                unsafe { core::str::from_utf8_unchecked(&CWD_BUF[..CWD_LEN]) }.into()
+            } else {
+                resolve(raw)
+            };
+            cmd_ls(&path, wr);
+        }
         "lspci"   => cmd_lspci(wr),
         "disk"    => cmd_disk(wr),
         "cat"     => {
-            if let Some(path) = parts.next() { cmd_cat(path, wr); }
+            if let Some(raw) = parts.next() { cmd_cat(&resolve(raw), wr); }
             else { wr.put_str("  Usage: cat <path>\n", writer::DIM, SCALE); }
         }
         "write"   => {
             let path = parts.next();
             let data: String = parts.collect::<Vec<_>>().join(" ");
             match (path, data.is_empty()) {
-                (Some(p), false) => cmd_write(p, data.as_bytes(), wr),
+                (Some(p), false) => cmd_write(&resolve(p), data.as_bytes(), wr),
                 _ => wr.put_str("  Usage: write <path> <content>\n", writer::DIM, SCALE),
             }
         }
         "reboot"  => cmd_reboot(),
         "exec"    => {
-            if let Some(path) = parts.next() {
-                if let Err(_) = crate::task::spawn_process(path) {
+            if let Some(raw) = parts.next() {
+                if let Err(_) = crate::task::spawn_process(&resolve(raw)) {
                     wr.put_str("  Error: failed to spawn process\n", writer::RED, SCALE);
                 }
             } else {
@@ -153,6 +186,29 @@ fn execute(input: &str, wr: &mut writer::Writer) {
             wr.put_str(other, writer::RED, SCALE);
             wr.put_str("'\n", writer::RED, SCALE);
         }
+    }
+}
+
+fn cmd_pwd(wr: &mut writer::Writer) {
+    let cwd = unsafe { core::str::from_utf8_unchecked(&CWD_BUF[..CWD_LEN]) };
+    wr.put_str("  ", writer::FG, SCALE);
+    wr.put_str(cwd, writer::ACCENT, SCALE);
+    wr.put_char(b'\n', writer::FG, SCALE);
+}
+
+fn cmd_cd(raw: &str, wr: &mut writer::Writer) {
+    let path = resolve(raw);
+    match crate::vfs::open(&path) {
+        Ok(node) if node.attribute().node_type == crate::vfs::NodeType::Directory => {
+            let bytes = path.as_bytes();
+            let len = bytes.len().min(MAX_CWD);
+            unsafe {
+                CWD_BUF[..len].copy_from_slice(&bytes[..len]);
+                CWD_LEN = len;
+            }
+        }
+        Ok(_) => wr.put_str("  Error: not a directory\n", writer::RED, SCALE),
+        Err(_) => wr.put_str("  Error: no such path\n", writer::RED, SCALE),
     }
 }
 
@@ -300,15 +356,21 @@ fn cmd_reboot() -> ! {
 // ── Commands ──────────────────────────────────────────────────────────────────
 
 fn cmd_help(wr: &mut writer::Writer) {
+    let cwd = unsafe { core::str::from_utf8_unchecked(&CWD_BUF[..CWD_LEN]) };
+    wr.put_str("  cwd: ", writer::DIM, SCALE);
+    wr.put_str(cwd, writer::ACCENT, SCALE);
+    wr.put_char(b'\n', writer::FG, SCALE);
     let cmds: &[(&str, &str)] = &[
         ("help",    "Show this help message"),
         ("clear",   "Clear the terminal area"),
-        ("ls",      "List files in the RAMDisk"),
+        ("pwd",     "Show current directory"),
+        ("cd",      "Change directory: cd <path>"),
+        ("ls",      "List directory (default: cwd)"),
         ("lspci",   "List enumerated PCI devices"),
         ("disk",    "Read sector 0 and show MBR signature"),
-        ("cat",     "Print a file: cat <path>"),
+        ("cat",     "Print a file (relative paths use cwd)"),
         ("write",   "Write to a file: write <path> <content>"),
-        ("exec",    "Execute an ELF binary (exec <path>)"),
+        ("exec",    "Execute an ELF binary"),
         ("memory",  "Show physical memory statistics"),
         ("uptime",  "Show system uptime"),
         ("version", "Show ROSS version info"),

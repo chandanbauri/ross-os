@@ -5,11 +5,13 @@
 
 extern crate alloc;
 
+mod fd;
 mod gdt;
 mod heap;
 mod idt;
 mod ipc;
 mod kbuf;
+mod mmap;
 mod keyboard;
 mod ahci;
 mod fat32;
@@ -310,9 +312,8 @@ fn panic(info: &PanicInfo) -> ! {
 }
 
 extern "C" fn task_a() -> ! {
-    let msg = "Hello from Syscall!";
     loop {
-        syscall::do_syscall(1, msg.as_ptr() as u64, msg.len() as u64, 0);
+        crate::serial::serial_print("A");
         for _ in 0..1_000_000 { unsafe { core::arch::asm!("nop"); } }
     }
 }

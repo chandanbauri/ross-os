@@ -52,6 +52,9 @@ pub struct Task {
     pub cr3: u64,
     pub state: TaskState,
     pub is_user: bool,
+    pub fd_table: crate::fd::FdTable,
+    /// First unmapped page above the ELF data; brk/mmap grow from here.
+    pub heap_end: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +62,7 @@ pub enum TaskState {
     Ready,
     Running,
     Blocked,
+    Dead,
 }
 
 impl Task {
@@ -114,6 +118,8 @@ impl Task {
             cr3,
             state: TaskState::Ready,
             is_user,
+            fd_table: crate::fd::FdTable::with_stdio(),
+            heap_end: 0,
         }
     }
 
@@ -127,11 +133,13 @@ impl Task {
         Task {
             id: TaskId(NEXT_ID.fetch_add(1, Ordering::SeqCst)),
             stack: Vec::new(),
-            kernel_stack_top: 0, // Main task uses the stack from _start
+            kernel_stack_top: 0,
             rsp: 0,
             cr3,
             state: TaskState::Running,
             is_user: false,
+            fd_table: crate::fd::FdTable::with_stdio(),
+            heap_end: 0,
         }
     }
 }
@@ -167,9 +175,13 @@ impl Scheduler {
 
     pub fn pick_next(&mut self, current_rsp: u64) -> TaskSwitchResult {
         if let Some(mut current) = self.current_task.take() {
-            current.rsp = current_rsp;
-            current.state = TaskState::Ready;
-            self.tasks.push_back(current);
+            if current.state == TaskState::Dead {
+                drop(current); // stack + page table leak until Phase 9 cleanup
+            } else {
+                current.rsp = current_rsp;
+                current.state = TaskState::Ready;
+                self.tasks.push_back(current);
+            }
         }
 
         if let Some(mut next) = self.tasks.pop_front() {
@@ -218,6 +230,8 @@ pub fn spawn_process(path: &str) -> Result<(), ()> {
 
     let cr3 = paging::create_user_address_space();
     crate::serial::serial_print("[EXEC] Created user address space (CR3)\n");
+
+    let mut heap_end: u64 = 0;
 
     // Map PT_LOAD segments
     for (i, ph) in header.program_headers(&data).iter().enumerate() {
@@ -283,6 +297,9 @@ pub fn spawn_process(path: &str) -> Result<(), ()> {
                 current_page += 4096;
             }
 
+            // Track the highest mapped virtual address for heap_end.
+            if page_end > heap_end { heap_end = page_end; }
+
             use core::fmt::Write;
             let mut serial = crate::serial::SerialPort;
             let _ = writeln!(
@@ -306,7 +323,8 @@ pub fn spawn_process(path: &str) -> Result<(), ()> {
     let stack_top = (stack_vaddr + stack_pages * 4096) & !0xF;
 
     // Enqueue the user task.  The preemptive timer will schedule it.
-    let user_task = Task::new(header.e_entry as usize, stack_top, cr3, true);
+    let mut user_task = Task::new(header.e_entry as usize, stack_top, cr3, true);
+    user_task.heap_end = heap_end;
     SCHEDULER.lock().add_task(user_task);
 
     use core::fmt::Write;

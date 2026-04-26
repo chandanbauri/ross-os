@@ -105,6 +105,10 @@ name = "ross-common"
 version = "0.1.0"
 
 [[package]]
+name = "ross-hello"
+version = "0.1.0"
+
+[[package]]
 name = "ross-init"
 version = "0.1.0"
 

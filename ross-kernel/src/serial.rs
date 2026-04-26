@@ -34,3 +34,7 @@ pub fn serial_print(s: &str) {
     use core::fmt::Write;
     let _ = SerialPort.write_str(s);
 }
+
+pub fn serial_print_byte(b: u8) {
+    SerialPort.write_byte(b);
+}
