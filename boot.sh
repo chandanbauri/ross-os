@@ -82,6 +82,6 @@ qemu-system-x86_64 \
     -drive id=rossdisk,format=raw,if=none,file=build/disk.img \
     -device ahci,id=ahci0 \
     -device ide-hd,drive=rossdisk,bus=ahci0.0 \
-    -m 512M -vga std -net none -serial stdio \
+    -smp 2 -m 512M -vga std -net none -serial stdio \
     -display cocoa,zoom-to-fit=off
 

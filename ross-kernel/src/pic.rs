@@ -78,3 +78,11 @@ pub unsafe fn send_eoi_both() {
         outb(PIC1_CMD, PIC_EOI);
     }
 }
+
+/// Mask all IRQs on both 8259 PICs.  Call this after LAPIC is active.
+pub unsafe fn disable() {
+    unsafe {
+        outb(PIC1_DATA, 0xFF);
+        outb(PIC2_DATA, 0xFF);
+    }
+}

@@ -91,21 +91,30 @@ pub fn init_idt(idt: &mut Idt) {
     for i in 32usize..=47 {
         idt.entries[i].set_handler(irq_stub_handler as *const u8);
     }
-    // IRQ0 (PIT timer) → vector 32
+    // IRQ0 (PIT timer) / APIC timer → vector 32
     idt.entries[32].set_handler(timer_handler_stub as *const u8);
     // IRQ1 (PS/2 keyboard) → vector 33
     idt.entries[33].set_handler(keyboard::handler as *const u8);
+    // APIC spurious vector → 0xFF
+    idt.entries[0xFF].set_handler(lapic_spurious_handler as *const u8);
+}
+
+extern "x86-interrupt" fn lapic_spurious_handler(_frame: InterruptStackFrame) {
+    // Spurious LAPIC interrupt — no EOI needed per spec.
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn task_timer_handler(rsp: u64) -> u128 {
-    // Definitive trace: if you see this, interrupts are working
-    // crate::serial::serial_print("!"); 
-    
     pit::tick();
     let res = crate::task::SCHEDULER.lock().pick_next(rsp);
-    unsafe { pic::send_eoi(0); }
-    
+
+    // Acknowledge interrupt: use LAPIC EOI when LAPIC is active, else PIC EOI.
+    if crate::lapic::is_enabled() {
+        crate::lapic::eoi();
+    } else {
+        unsafe { pic::send_eoi(0); }
+    }
+
     // Combine RSP and CR3 into a single u128 for register return (RAX/RDX)
     (res.cr3 as u128) << 64 | (res.rsp as u128)
 }

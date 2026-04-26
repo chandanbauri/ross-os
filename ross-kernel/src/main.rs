@@ -5,12 +5,14 @@
 
 extern crate alloc;
 
+mod acpi;
 mod fd;
 mod gdt;
 mod heap;
 mod idt;
 mod ipc;
 mod kbuf;
+mod lapic;
 mod mmap;
 mod keyboard;
 mod ahci;
@@ -21,6 +23,7 @@ mod pit;
 mod pmm;
 mod paging;
 mod shell;
+mod smp;
 mod task;
 mod syscall;
 mod vfs;
@@ -33,7 +36,7 @@ use alloc::vec::Vec;
 use core::panic::PanicInfo;
 use ross_common::BootInfo;
 
-static mut  GDT:  gdt::Gdt = gdt::Gdt::new();
+pub static mut GDT: gdt::Gdt = gdt::Gdt::new();
 static mut IDT:  idt::Idt = idt::Idt::new();
 
 #[repr(align(16))]
@@ -189,6 +192,24 @@ extern "C" fn kernel_main(info: &'static BootInfo) -> ! {
         }
 
         core::arch::asm!("sti"); // Enable interrupts
+    }
+
+    // ── 10. ACPI + LAPIC + SMP ──────────────────────────────────────────────
+    {
+        if let Some(acpi) = acpi::init(info.memory_map, info.memory_map_len) {
+            // Init BSP LAPIC (calibrates timer against PIT while PIC still active).
+            lapic::init(acpi.lapic_base);
+
+            // Now disable the legacy 8259 PIC — LAPIC timer drives vector 32.
+            unsafe { pic::disable(); }
+
+            serial::serial_print("[SMP] LAPIC active, PIC disabled\n");
+
+            // Wake up APs.
+            smp::init(&acpi.ap_ids, acpi.bsp_id);
+        } else {
+            serial::serial_print("[SMP] ACPI not found — running single-core\n");
+        }
     }
 
     // ── 6. Splash Screen ────────────────────────────────────────────────────
